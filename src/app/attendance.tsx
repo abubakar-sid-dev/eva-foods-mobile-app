@@ -18,12 +18,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
 import {
-  getApplicableCalendarDays,
+  buildDailyAttendanceDetails,
   getAttendanceCounts,
+  type CompanyHoliday,
   type AttendanceCounts,
 } from "@/utils/attendance-calculations";
 import {
   Attendance,
+  getCompanyHolidaysForYear,
   getEmployeeAttendanceForYear,
   seedAttendance,
 } from "@/database/database";
@@ -41,6 +43,7 @@ export default function AttendanceScreen() {
   const [year, setYear] = useState(month.getFullYear());
   const [viewMode, setViewMode] = useState<ViewMode>("monthly");
   const [yearRows, setYearRows] = useState<Attendance[]>([]);
+  const [holidays, setHolidays] = useState<CompanyHoliday[]>([]);
   const [loading, setLoading] = useState(true);
   const [datePickerVisible, setDatePickerVisible] = useState(false);
   const [pickerYear, setPickerYear] = useState(month.getFullYear());
@@ -50,9 +53,12 @@ export default function AttendanceScreen() {
     setLoading(true);
     try {
       await seedAttendance();
-      setYearRows(
-        await getEmployeeAttendanceForYear(employee.employeeCode, year),
-      );
+      const [attendance, companyHolidays] = await Promise.all([
+        getEmployeeAttendanceForYear(employee.employeeCode, year),
+        getCompanyHolidaysForYear(year),
+      ]);
+      setYearRows(attendance);
+      setHolidays(companyHolidays);
     } finally {
       setLoading(false);
     }
@@ -89,26 +95,32 @@ export default function AttendanceScreen() {
 
   if (!employee) return null;
 
-  const monthCounts = getAttendanceCounts(monthRows);
-  const availableDays = (targetYear: number, targetMonth: number) =>
-    getApplicableCalendarDays(
-      targetYear,
-      targetMonth,
+  const dailyDetails = buildDailyAttendanceDetails(
+    year,
+    month.getMonth(),
+    employee.joiningDate,
+    monthRows,
+    holidays,
+    now,
+  );
+  const monthCounts = getAttendanceCounts(dailyDetails);
+  const monthDays = dailyDetails.length;
+
+  const monthlySummaries = MONTHS.map((monthIndex) => {
+    const details = buildDailyAttendanceDetails(
+      year,
+      monthIndex,
       employee.joiningDate,
+      yearRows,
+      holidays,
       now,
     );
-
-  const monthlyRows = MONTHS.map((monthIndex) =>
-    yearRows.filter((row) => {
-      const rowDate = new Date(`${row.attendanceDate}T00:00:00`);
-      return rowDate.getMonth() === monthIndex;
-    }),
-  );
-  const monthlySummaries = monthlyRows.map((rows, monthIndex) => ({
-    monthIndex,
-    days: availableDays(year, monthIndex),
-    counts: getAttendanceCounts(rows),
-  }));
+    return {
+      monthIndex,
+      days: details.length,
+      counts: getAttendanceCounts(details),
+    };
+  });
   const yearSummary = monthlySummaries.reduce(
     (summary, monthSummary) => ({
       days: summary.days + monthSummary.days,
@@ -116,8 +128,20 @@ export default function AttendanceScreen() {
       absent: summary.absent + monthSummary.counts.absent,
       late: summary.late + monthSummary.counts.late,
       leave: summary.leave + monthSummary.counts.leave,
+      holiday: summary.holiday + monthSummary.counts.holiday,
+      weekend: summary.weekend + monthSummary.counts.weekend,
+      notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
     }),
-    { days: 0, present: 0, absent: 0, late: 0, leave: 0 },
+    {
+      days: 0,
+      present: 0,
+      absent: 0,
+      late: 0,
+      leave: 0,
+      holiday: 0,
+      weekend: 0,
+      notRecorded: 0,
+    },
   );
 
   const setSelectedMonth = (nextMonth: Date) => {
@@ -239,26 +263,30 @@ export default function AttendanceScreen() {
               <View style={styles.totalCopy}>
                 <Text style={styles.totalLabel}>Total Attendance</Text>
                 <Text style={styles.totalValue}>
-                  {monthCounts.present}
-                  <Text style={styles.totalSmall}> of {availableDays(year, month.getMonth())} days</Text>
+                  {monthCounts.present + monthCounts.late}
+                  <Text style={styles.totalSmall}> of {monthDays} days</Text>
                 </Text>
               </View>
             </View>
 
             <View style={styles.metrics}>
               <Metric label="Present" count={monthCounts.present} />
-              <Metric label="Absent" count={monthCounts.absent} />
               <Metric label="Late" count={monthCounts.late} />
+              <Metric label="Absent" count={monthCounts.absent} />
               <Metric label="Leave" count={monthCounts.leave} />
             </View>
 
             <Text style={styles.sectionTitle}>Monthly Attendance</Text>
             <View style={styles.summaryCard}>
-              <SummaryRow label="Total Calendar Days" count={availableDays(year, month.getMonth())} tone="neutral" />
+              <SummaryRow label="Total Calendar Days" count={monthDays} tone="neutral" />
+              <SummaryRow label="Total Attendance (Present + Late)" count={monthCounts.present + monthCounts.late} tone="present" />
               <SummaryRow label="Present Days" count={monthCounts.present} tone="present" />
-              <SummaryRow label="Absent Days" count={monthCounts.absent} tone="absent" />
               <SummaryRow label="Late Days" count={monthCounts.late} tone="late" />
+              <SummaryRow label="Absent Days" count={monthCounts.absent} tone="absent" />
               <SummaryRow label="Leave Days" count={monthCounts.leave} tone="leave" />
+              <SummaryRow label="Holiday Days" count={monthCounts.holiday} tone="holiday" />
+              <SummaryRow label="Weekend Days" count={monthCounts.weekend} tone="weekend" />
+              <SummaryRow label="Not Recorded Days" count={monthCounts.notRecorded} tone="unrecorded" />
             </View>
 
             <Text style={styles.sectionTitle}>Monthly Attendance Details</Text>
@@ -270,19 +298,19 @@ export default function AttendanceScreen() {
               </View>
               {loading ? (
                 <ActivityIndicator style={styles.loading} color={COLORS.green} />
-              ) : monthRows.length === 0 ? (
+              ) : dailyDetails.length === 0 ? (
                 <Text style={styles.emptyState}>
-                  No attendance records for this month.
+                  No dates are available before the employee joined or after today.
                 </Text>
               ) : (
-                monthRows.map((row, index) => (
+                dailyDetails.map((row, index) => (
                   <Animated.View
-                    key={row.id}
+                    key={row.attendanceDate}
                     entering={FadeInDown.delay(Math.min(index * 12, 180)).duration(220)}
                     style={styles.tableRow}
                   >
                     <Text style={styles.cell}>
-                      {Number(row.attendanceDate.slice(-2))} {month.toLocaleDateString("en-US", { month: "short" })}
+                      {row.weekday}, {Number(row.attendanceDate.slice(-2))} {month.toLocaleDateString("en-US", { month: "short" })}
                     </Text>
                     <Text style={[styles.cell, { color: statusColor(row.status) }]}>
                       {row.status}
@@ -310,8 +338,12 @@ export default function AttendanceScreen() {
                 setYear(selectedYear);
                 const latestMonth =
                   selectedYear === now.getFullYear() ? now.getMonth() : 11;
+                const earliestMonth =
+                  selectedYear === firstAvailableMonth.getFullYear()
+                    ? firstAvailableMonth.getMonth()
+                    : 0;
                 const selectedMonth = Math.max(
-                  firstAvailableMonth.getMonth(),
+                  earliestMonth,
                   Math.min(month.getMonth(), latestMonth),
                 );
                 setMonth(new Date(selectedYear, selectedMonth, 1));
@@ -326,15 +358,21 @@ export default function AttendanceScreen() {
               ) : (
                 <>
                   <Text style={styles.yearTotalDays}>
-                    {yearSummary.present} <Text style={styles.yearTotalCaption}>present days</Text>
+                    {yearSummary.present + yearSummary.late} <Text style={styles.yearTotalCaption}>attendance days</Text>
                   </Text>
                   <Text style={styles.yearSubline}>
                     {yearSummary.days} applicable calendar days
                   </Text>
                   <View style={styles.yearCounts}>
-                    <YearCount label="Absent" count={yearSummary.absent} tone="absent" />
+                    <YearCount label="Present" count={yearSummary.present} tone="present" />
                     <YearCount label="Late" count={yearSummary.late} tone="late" />
+                    <YearCount label="Absent" count={yearSummary.absent} tone="absent" />
                     <YearCount label="Leave" count={yearSummary.leave} tone="leave" />
+                  </View>
+                  <View style={styles.yearCounts}>
+                    <YearCount label="Holiday" count={yearSummary.holiday} tone="holiday" />
+                    <YearCount label="Weekend" count={yearSummary.weekend} tone="weekend" />
+                    <YearCount label="Not Recorded" count={yearSummary.notRecorded} tone="unrecorded" />
                   </View>
                 </>
               )}
@@ -368,7 +406,7 @@ export default function AttendanceScreen() {
                         pressed && styles.cardPressed,
                       ]}
                       accessibilityRole="button"
-                      accessibilityLabel={`${monthName} ${year}: ${counts.present} present days, ${days} applicable calendar days`}
+                      accessibilityLabel={`${monthName} ${year}: ${counts.present + counts.late} attendance days, ${days} applicable calendar days`}
                     >
                       <View style={styles.monthCardTitleRow}>
                         <Text style={[styles.monthCardTitle, disabled && styles.disabledText]}>
@@ -380,7 +418,7 @@ export default function AttendanceScreen() {
                         {disabled ? "Not available" : `${days} calendar days`}
                       </Text>
                       <Text style={styles.monthCardPresent}>
-                        {counts.present} <Text style={styles.monthCardSmall}>present</Text>
+                        {counts.present + counts.late} <Text style={styles.monthCardSmall}>attendance</Text>
                       </Text>
                       <StatusBar counts={counts} total={days} />
                       <Text style={styles.monthCardLegend}>
@@ -576,7 +614,15 @@ function SummaryRow({
   );
 }
 
-type StatusTone = "neutral" | "present" | "absent" | "late" | "leave";
+type StatusTone =
+  | "neutral"
+  | "present"
+  | "absent"
+  | "late"
+  | "leave"
+  | "holiday"
+  | "weekend"
+  | "unrecorded";
 
 function YearCount({
   label,
@@ -616,13 +662,13 @@ function StatusBar({
       <View
         style={[
           styles.statusSegment,
-          { backgroundColor: COLORS.red, flex: counts.absent },
+          { backgroundColor: COLORS.orange, flex: counts.late },
         ]}
       />
       <View
         style={[
           styles.statusSegment,
-          { backgroundColor: COLORS.orange, flex: counts.late },
+          { backgroundColor: COLORS.red, flex: counts.absent },
         ]}
       />
       <View
@@ -634,10 +680,19 @@ function StatusBar({
       <View
         style={[
           styles.statusSegment,
-          {
-            backgroundColor: COLORS.track,
-            flex: Math.max(total - counts.present - counts.absent - counts.late - counts.leave, 0),
-          },
+          { backgroundColor: COLORS.purple, flex: counts.holiday },
+        ]}
+      />
+      <View
+        style={[
+          styles.statusSegment,
+          { backgroundColor: COLORS.blue, flex: counts.weekend },
+        ]}
+      />
+      <View
+        style={[
+          styles.statusSegment,
+          { backgroundColor: COLORS.track, flex: counts.notRecorded },
         ]}
       />
     </View>
@@ -648,14 +703,20 @@ function statusColor(status: string) {
   if (status === "Present") return COLORS.green;
   if (status === "Absent") return COLORS.red;
   if (status === "Late") return COLORS.orange;
-  return COLORS.gold;
+  if (status === "Leave") return COLORS.gold;
+  if (status === "Holiday") return COLORS.purple;
+  if (status === "Weekend") return COLORS.blue;
+  return COLORS.neutral;
 }
 
 function statusSoftColor(status: string) {
   if (status === "Present") return "#E4F3E9";
   if (status === "Absent") return "#FCEAEA";
   if (status === "Late") return "#FFF0E1";
-  return "#FFF6D9";
+  if (status === "Leave") return "#FFF6D9";
+  if (status === "Holiday") return "#F0EAFE";
+  if (status === "Weekend") return "#E8F2FC";
+  return "#EEF1F3";
 }
 
 function toneColor(tone: StatusTone) {
@@ -663,7 +724,10 @@ function toneColor(tone: StatusTone) {
   if (tone === "present") return COLORS.green;
   if (tone === "absent") return COLORS.red;
   if (tone === "late") return COLORS.orange;
-  return COLORS.gold;
+  if (tone === "leave") return COLORS.gold;
+  if (tone === "holiday") return COLORS.purple;
+  if (tone === "weekend") return COLORS.blue;
+  return COLORS.neutral;
 }
 
 const COLORS = {
@@ -671,6 +735,9 @@ const COLORS = {
   red: "#C94C4C",
   orange: "#D97706",
   gold: "#C99519",
+  purple: "#7955B8",
+  blue: "#3478B8",
+  neutral: "#84918A",
   track: "#E9EEF0",
 };
 

@@ -1,4 +1,5 @@
 import type * as SQLite from "expo-sqlite";
+import type { CompanyHoliday } from "@/utils/attendance-calculations";
 
 export type Role = "Employee" | "HR" | "Admin";
 export type Employee = {
@@ -130,6 +131,10 @@ async function initializeDatabaseInternal() {
     CREATE TABLE IF NOT EXISTS AppMetadata (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS CompanyHolidays (
+      attendanceDate TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL
     );`);
   const todayString = formatDate(new Date());
   await db.runAsync(
@@ -348,6 +353,19 @@ export async function getEmployeeAttendanceForYear(
     employeeCode,
     yearPrefix,
     employeeCode,
+  );
+}
+
+/** Returns only explicitly configured company holidays; none are assumed. */
+export async function getCompanyHolidaysForYear(year: number) {
+  const startDate = `${year}-01-01`;
+  const endDate = `${year}-12-31`;
+  return (await getDatabase()).getAllAsync<CompanyHoliday>(
+    `SELECT attendanceDate, name FROM CompanyHolidays
+     WHERE attendanceDate >= ? AND attendanceDate <= ?
+     ORDER BY attendanceDate`,
+    startDate,
+    endDate,
   );
 }
 
