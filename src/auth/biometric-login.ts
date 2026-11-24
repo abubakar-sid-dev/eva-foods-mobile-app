@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 
 const BIOMETRIC_CREDENTIAL_KEY = "eva.biometric.credential.v1";
 const BIOMETRIC_ENABLED_KEY = "eva.biometric.enabled.v1";
+const BIOMETRIC_MODE_KEY = "eva.biometric.mode.v1";
 const secureStoreOptions: SecureStore.SecureStoreOptions = {
   requireAuthentication: true,
   authenticationPrompt: "Authenticate to sign in to EVA Foods",
@@ -27,14 +28,15 @@ export async function getBiometricAvailability(): Promise<BiometricAvailability>
   }
 
   try {
-    const [hasHardware, enrolled, types, secureStoreAvailable] = await Promise.all([
-      LocalAuthentication.hasHardwareAsync(),
-      LocalAuthentication.isEnrolledAsync(),
-      LocalAuthentication.supportedAuthenticationTypesAsync(),
-      SecureStore.isAvailableAsync(),
-    ]);
+    const [hasHardware, enrolled, types, secureStoreAvailable] =
+      await Promise.all([
+        LocalAuthentication.hasHardwareAsync(),
+        LocalAuthentication.isEnrolledAsync(),
+        LocalAuthentication.supportedAuthenticationTypesAsync(),
+        SecureStore.isAvailableAsync(),
+      ]);
 
-    if (!hasHardware || !SecureStore.canUseBiometricAuthentication()) {
+    if (!hasHardware) {
       return { available: false, reason: "unsupported", types };
     }
     if (!enrolled) {
@@ -63,12 +65,16 @@ export async function enableBiometricLogin(username: string) {
   if (!availability.available) return false;
 
   try {
-    // Never store the password. The protected reference only identifies the
-    // demo account after the OS authenticates the current biometric set.
+    const credential = username.trim().toLowerCase();
+    const secureStoreBiometrics = SecureStore.canUseBiometricAuthentication();
     await SecureStore.setItemAsync(
       BIOMETRIC_CREDENTIAL_KEY,
-      username.trim().toLowerCase(),
-      secureStoreOptions,
+      credential,
+      secureStoreBiometrics ? secureStoreOptions : undefined,
+    );
+    await SecureStore.setItemAsync(
+      BIOMETRIC_MODE_KEY,
+      secureStoreBiometrics ? "secure-store" : "local-authentication",
     );
     await SecureStore.setItemAsync(BIOMETRIC_ENABLED_KEY, "true");
     return true;
@@ -81,10 +87,22 @@ export async function readBiometricLoginCredential(): Promise<BiometricReadResul
   if (!(await isBiometricLoginEnabled())) return { status: "not-enabled" };
 
   try {
-    const credential = await SecureStore.getItemAsync(
-      BIOMETRIC_CREDENTIAL_KEY,
-      secureStoreOptions,
-    );
+    const mode = await SecureStore.getItemAsync(BIOMETRIC_MODE_KEY);
+    let credential: string | null;
+    if (mode === "local-authentication") {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: "Sign in to EVA Foods",
+        cancelLabel: "Use password",
+        disableDeviceFallback: true,
+      });
+      if (!result.success) return { status: "cancelled-or-failed" };
+      credential = await SecureStore.getItemAsync(BIOMETRIC_CREDENTIAL_KEY);
+    } else {
+      credential = await SecureStore.getItemAsync(
+        BIOMETRIC_CREDENTIAL_KEY,
+        secureStoreOptions,
+      );
+    }
     if (!credential) {
       await markBiometricLoginDisabled();
       return { status: "enrollment-changed" };
@@ -108,6 +126,11 @@ export async function clearBiometricLogin() {
   } catch {
     // Treat an unreadable marker as disabled on the next app launch.
   }
+  try {
+    await SecureStore.deleteItemAsync(BIOMETRIC_MODE_KEY);
+  } catch {
+    // Missing mode marker is safe; login will require the normal credentials.
+  }
 }
 
 async function markBiometricLoginDisabled() {
@@ -115,6 +138,11 @@ async function markBiometricLoginDisabled() {
     await SecureStore.deleteItemAsync(BIOMETRIC_CREDENTIAL_KEY);
   } catch {
     // The inaccessible value is no longer offered for biometric sign-in.
+  }
+  try {
+    await SecureStore.deleteItemAsync(BIOMETRIC_MODE_KEY);
+  } catch {
+    // Missing mode marker is safe.
   }
   try {
     await SecureStore.deleteItemAsync(BIOMETRIC_ENABLED_KEY);
