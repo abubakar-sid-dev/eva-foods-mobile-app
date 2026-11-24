@@ -1,43 +1,31 @@
-import { version } from 'expo/package.json';
-import { Image } from 'expo-image';
-import { useColorScheme, StyleSheet } from 'react-native';
+import { StyleSheet } from "react-native";
+import { version } from "expo/package.json";
 
-import { ThemedText } from './themed-text';
-import { ThemedView } from './themed-view';
-
-import { Spacing } from '@/constants/theme';
+import { Spacing } from "@/constants/theme";
+import { ThemedText } from "./themed-text";
+import { ThemedView } from "./themed-view";
 
 export function WebBadge() {
-  const scheme = useColorScheme();
-
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="code" themeColor="textSecondary" style={styles.versionText}>
-        v{version}
+      <ThemedText type="smallBold" style={styles.brand}>
+        EVA FOODS
       </ThemedText>
-      <Image
-        source={
-          scheme === 'dark'
-            ? require('@/assets/images/expo-badge-white.png')
-            : require('@/assets/images/expo-badge.png')
-        }
-        style={styles.badgeImage}
-      />
+      <ThemedText type="code" themeColor="textSecondary">
+        Employee App · v{version}
+      </ThemedText>
     </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    padding: Spacing.five,
-    alignItems: 'center',
-    gap: Spacing.two,
+    marginTop: Spacing.five,
+    padding: Spacing.four,
+    alignItems: "center",
+    gap: Spacing.one,
+    borderTopWidth: 1,
+    borderColor: "#DCE7DF",
   },
-  versionText: {
-    textAlign: 'center',
-  },
-  badgeImage: {
-    width: 123,
-    aspectRatio: 123 / 24,
-  },
+  brand: { color: "#176B45", letterSpacing: 1.2 },
 });
