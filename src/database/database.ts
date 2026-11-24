@@ -332,6 +332,25 @@ export async function getEmployeeAttendance(
     employeeCode,
   );
 }
+
+export async function getEmployeeAttendanceForYear(
+  employeeCode: string,
+  year: number,
+) {
+  const yearPrefix = `${year}-%`;
+  return (await getDatabase()).getAllAsync<Attendance>(
+    `SELECT * FROM Attendance
+     WHERE employeeCode = ?
+       AND attendanceDate LIKE ?
+       AND attendanceDate >= (SELECT joiningDate FROM Employees WHERE employeeCode = ?)
+       AND attendanceDate <= date('now', 'localtime')
+     ORDER BY attendanceDate`,
+    employeeCode,
+    yearPrefix,
+    employeeCode,
+  );
+}
+
 export async function getAllAttendance() {
   return (await getDatabase()).getAllAsync<Attendance>(
     "SELECT * FROM Attendance ORDER BY attendanceDate, employeeCode",

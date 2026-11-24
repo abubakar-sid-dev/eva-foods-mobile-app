@@ -117,7 +117,7 @@ export default function LoginScreen() {
               </Text>
             )}
             <Pressable
-              style={styles.button}
+              style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
               onPress={login}
               disabled={busy}
             >
@@ -218,6 +218,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 6,
   },
+  buttonPressed: { opacity: 0.86, transform: [{ scale: 0.985 }] },
   buttonText: { color: "white", fontSize: 17, fontWeight: "700" },
   error: { color: "#c62b3c", marginBottom: 10 },
   demo: { fontSize: 12, color: "#66768a", textAlign: "center", marginTop: 18 },
