@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from "react";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   ActivityIndicator,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -17,18 +16,15 @@ import Animated, {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 import {
   buildDailyAttendanceDetails,
   getAttendanceCounts,
   type CompanyHoliday,
   type AttendanceCounts,
 } from "@/utils/attendance-calculations";
-import {
-  Attendance,
-  getCompanyHolidaysForYear,
-  getEmployeeAttendanceForYear,
-  seedAttendance,
-} from "@/database/database";
+import { attendanceService } from "@/services/attendance-service";
+import type { Attendance } from "@/types/hrms";
 
 type ViewMode = "monthly" | "yearly";
 const MONTHS = Array.from({ length: 12 }, (_, month) => month);
@@ -52,10 +48,9 @@ export default function AttendanceScreen() {
     if (!employee) return;
     setLoading(true);
     try {
-      await seedAttendance();
       const [attendance, companyHolidays] = await Promise.all([
-        getEmployeeAttendanceForYear(employee.employeeCode, year),
-        getCompanyHolidaysForYear(year),
+        attendanceService.loadEmployeeYear(employee.employeeCode, year),
+        attendanceService.getCompanyHolidays(year),
       ]);
       setYearRows(attendance);
       setHolidays(companyHolidays);
@@ -184,17 +179,7 @@ export default function AttendanceScreen() {
             </View>
           </View>
           <View style={styles.profile}>
-            <View style={styles.avatar}>
-              {employee.profileImage ? (
-                <Image
-                  source={{ uri: employee.profileImage }}
-                  resizeMode="cover"
-                  style={styles.profileImage}
-                />
-              ) : (
-                <Text style={styles.initial}>{initials}</Text>
-              )}
-            </View>
+            <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={66} />
             <View style={styles.divider} />
             <View style={styles.profileText}>
               <Text style={styles.name}>{employee.name}</Text>

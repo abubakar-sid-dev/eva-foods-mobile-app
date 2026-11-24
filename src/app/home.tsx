@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { SymbolView } from "expo-symbols";
 import { useRouter } from "expo-router";
+import { Alert, Modal } from "react-native";
 import {
   Pressable,
   ScrollView,
@@ -10,25 +12,21 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 
 export default function HomeScreen() {
   const { employee, signOut } = useSession();
   const router = useRouter();
+  const [menuVisible, setMenuVisible] = useState(false);
 
   if (!employee) return null;
-
-  const initials = employee.name
-    .split(" ")
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join("");
 
   return (
     <SafeAreaView style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Pressable
-            onPress={signOut}
+            onPress={() => setMenuVisible(true)}
             accessibilityRole="button"
             accessibilityLabel="Sign out"
             hitSlop={12}
@@ -51,9 +49,7 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.profile}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{initials}</Text>
-          </View>
+          <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={60} />
           <View style={styles.profileCopy}>
             <Text style={styles.name}>{employee.name}</Text>
             <Text style={styles.designation}>{employee.designation}</Text>
@@ -129,7 +125,54 @@ export default function HomeScreen() {
           </Pressable>
         </View>
       </ScrollView>
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <View style={styles.drawerBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuVisible(false)} />
+          <View style={styles.drawer}>
+            <View style={styles.drawerProfile}>
+              <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={48} />
+              <View style={styles.profileCopy}>
+                <Text style={styles.drawerName}>{employee.name}</Text>
+                <Text style={styles.drawerDesignation}>{employee.designation}</Text>
+              </View>
+            </View>
+            <DrawerItem label="Home" onPress={() => { setMenuVisible(false); router.replace("/home" as never); }} />
+            <DrawerItem label="My Profile" pending onPress={() => setMenuVisible(false)} />
+            <DrawerItem label="Settings" pending onPress={() => setMenuVisible(false)} />
+            <DrawerItem label="Help & Support" pending onPress={() => setMenuVisible(false)} />
+            <View style={styles.drawerDivider} />
+            <DrawerItem label="Logout" destructive onPress={() => Alert.alert("Log out?", "Are you sure you want to log out?", [
+              { text: "Cancel", style: "cancel" },
+              { text: "Logout", style: "destructive", onPress: () => { setMenuVisible(false); signOut(); router.replace("/" as never); } },
+            ])} />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+type DrawerLabel = "Home" | "My Profile" | "Settings" | "Help & Support" | "Logout";
+
+function DrawerItem({ label, onPress, pending = false, destructive = false }: {
+  label: DrawerLabel;
+  onPress: () => void;
+  pending?: boolean;
+  destructive?: boolean;
+}) {
+  const iconNames = {
+    Home: { ios: "house", android: "home", web: "home" },
+    "My Profile": { ios: "person", android: "person", web: "person" },
+    Settings: { ios: "gearshape", android: "settings", web: "settings" },
+    "Help & Support": { ios: "questionmark.circle", android: "help", web: "help" },
+    Logout: { ios: "rectangle.portrait.and.arrow.right", android: "logout", web: "logout" },
+  } as const;
+  return (
+    <Pressable onPress={onPress} style={styles.drawerItem} accessibilityRole="button">
+      <SymbolView name={iconNames[label]} tintColor={destructive ? "#B33B3B" : "#176B45"} size={21} />
+      <Text style={[styles.drawerItemText, destructive && styles.logoutText]}>{label}</Text>
+      {pending && <Text style={styles.pendingTag}>Pending</Text>}
+    </Pressable>
   );
 }
 
@@ -267,4 +310,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   pressed: { opacity: 0.86, transform: [{ scale: 0.99 }] },
+  drawerBackdrop: { flex: 1, backgroundColor: "rgba(10,25,18,0.45)" },
+  drawer: { width: "82%", maxWidth: 340, flex: 1, backgroundColor: "#FFFFFF", paddingTop: 52, paddingHorizontal: 18, elevation: 20 },
+  drawerProfile: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#104B35", marginHorizontal: -18, marginTop: -52, paddingHorizontal: 20, paddingTop: 60, paddingBottom: 20, marginBottom: 16 },
+  drawerName: { color: "white", fontSize: 16, fontWeight: "800" },
+  drawerDesignation: { color: "#D9E9DF", fontSize: 12, marginTop: 3 },
+  drawerItem: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 8 },
+  drawerItemText: { flex: 1, color: "#17352B", fontSize: 15, fontWeight: "600" },
+  pendingTag: { color: "#8C721F", backgroundColor: "#FFF5D7", overflow: "hidden", borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: "700" },
+  drawerDivider: { height: 1, backgroundColor: "#E6ECE8", marginVertical: 10 },
+  logoutText: { color: "#B33B3B" },
 });

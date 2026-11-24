@@ -1,31 +1,7 @@
 import type * as SQLite from "expo-sqlite";
-import type { CompanyHoliday } from "@/utils/attendance-calculations";
+import type { Attendance, CompanyHoliday, Employee, Role } from "@/types/hrms";
 
-export type Role = "Employee" | "HR" | "Admin";
-export type Employee = {
-  id: number;
-  employeeCode: string;
-  username: string;
-  password: string;
-  name: string;
-  email: string;
-  phone: string;
-  department: string;
-  designation: string;
-  joiningDate: string;
-  profileImage: string | null;
-  role: Role;
-};
-export type Attendance = {
-  id: number;
-  employeeCode: string;
-  attendanceDate: string;
-  checkIn: string | null;
-  checkOut: string | null;
-  status: "Present" | "Absent" | "Late" | "Leave";
-  workingHours: number;
-  lateMinutes: number;
-};
+export type { Attendance, CompanyHoliday, Employee, Role } from "@/types/hrms";
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -144,6 +120,24 @@ async function initializeDatabaseInternal() {
   );
   await migrateAttendanceStatuses(db);
   await seedEmployees();
+  await assignLocalAvatars();
+}
+
+async function assignLocalAvatars() {
+  const db = await getDatabase();
+  const employees = await db.getAllAsync<Pick<Employee, "employeeCode" | "profileImage">>(
+    "SELECT employeeCode, profileImage FROM Employees ORDER BY id",
+  );
+  for (let index = 0; index < employees.length; index += 1) {
+    const employee = employees[index];
+    if (employee.profileImage) continue;
+    const avatarIndex = String((index % 100) + 1).padStart(3, "0");
+    await db.runAsync(
+      "UPDATE Employees SET profileImage = ? WHERE employeeCode = ? AND (profileImage IS NULL OR profileImage = '')",
+      `assets/avatars/avatar-${avatarIndex}.png`,
+      employee.employeeCode,
+    );
+  }
 }
 
 async function migrateAttendanceStatuses(db: SQLite.SQLiteDatabase) {
@@ -203,7 +197,7 @@ export async function seedEmployees() {
         dept,
         titles[i % titles.length],
         joiningDate,
-        null,
+        `assets/avatars/avatar-${suffix}.png`,
         role,
       );
     }
