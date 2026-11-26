@@ -10,7 +10,8 @@ function NavigationGate() {
   useEffect(() => {
     if (!ready) return;
     const route = String(segments[0] ?? "");
-    const onLogin = route !== "home" && route !== "attendance";
+    const protectedRoute = ["home", "attendance", "biometrics"].includes(route);
+    const onLogin = !protectedRoute;
     if (!employee && !onLogin) router.replace("/");
     if (employee && onLogin) router.replace("/home" as never);
   }, [employee, ready, segments, router]);
@@ -38,6 +39,7 @@ function NavigationGate() {
       <Stack.Screen name="index" />
       <Stack.Screen name="home" />
       <Stack.Screen name="attendance" />
+      <Stack.Screen name="biometrics" />
     </Stack>
   );
 }

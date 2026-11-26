@@ -28,7 +28,7 @@ export default function HomeScreen() {
           <Pressable
             onPress={() => setMenuVisible(true)}
             accessibilityRole="button"
-            accessibilityLabel="Sign out"
+            accessibilityLabel="Open navigation menu"
             hitSlop={12}
           >
             <SymbolView
@@ -140,6 +140,7 @@ export default function HomeScreen() {
             <DrawerItem label="My Profile" pending onPress={() => setMenuVisible(false)} />
             <DrawerItem label="Settings" pending onPress={() => setMenuVisible(false)} />
             <DrawerItem label="Help & Support" pending onPress={() => setMenuVisible(false)} />
+            <DrawerItem label="Biometric Login" onPress={() => { setMenuVisible(false); router.push("/biometrics" as never); }} />
             <View style={styles.drawerDivider} />
             <DrawerItem label="Logout" destructive onPress={() => Alert.alert("Log out?", "Are you sure you want to log out?", [
               { text: "Cancel", style: "cancel" },
@@ -152,7 +153,7 @@ export default function HomeScreen() {
   );
 }
 
-type DrawerLabel = "Home" | "My Profile" | "Settings" | "Help & Support" | "Logout";
+type DrawerLabel = "Home" | "My Profile" | "Settings" | "Help & Support" | "Biometric Login" | "Logout";
 
 function DrawerItem({ label, onPress, pending = false, destructive = false }: {
   label: DrawerLabel;
@@ -165,6 +166,7 @@ function DrawerItem({ label, onPress, pending = false, destructive = false }: {
     "My Profile": { ios: "person", android: "person", web: "person" },
     Settings: { ios: "gearshape", android: "settings", web: "settings" },
     "Help & Support": { ios: "questionmark.circle", android: "help", web: "help" },
+    "Biometric Login": { ios: "faceid", android: "fingerprint", web: "fingerprint" },
     Logout: { ios: "rectangle.portrait.and.arrow.right", android: "logout", web: "logout" },
   } as const;
   return (

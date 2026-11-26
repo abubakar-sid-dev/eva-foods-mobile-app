@@ -1,28 +1,33 @@
-import { useSession } from "@/auth/session";
 import { authenticationService } from "@/auth/auth-service";
-import { SymbolView } from "expo-symbols";
 import {
-  clearBiometricLogin,
-  enableBiometricLogin,
+  getEnabledBiometricMethods,
+  getBiometricMethodIcon,
+  getBiometricMethodLabel,
+  markBiometricEnrollmentHandled,
+  registerBiometricMethod,
   getBiometricAvailability,
-  isBiometricLoginEnabled,
+  wasBiometricEnrollmentHandled,
   readBiometricLoginCredential,
+  type BiometricMethod,
 } from "@/auth/biometric-login";
+import { useSession } from "@/auth/session";
 import type { Employee } from "@/types/hrms";
 import { useRouter } from "expo-router";
+import { SymbolView } from "expo-symbols";
 import { useEffect, useState } from "react";
 import {
-    Alert,
-    Animated,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Alert,
+  Animated,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 export default function LoginScreen() {
@@ -31,14 +36,30 @@ export default function LoginScreen() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [enabledMethods, setEnabledMethods] = useState<BiometricMethod[]>([]);
+  const [availableMethods, setAvailableMethods] = useState<BiometricMethod[]>([]);
   const [biometricBusy, setBiometricBusy] = useState(false);
+  const [enrollmentStep, setEnrollmentStep] = useState<"offer" | "choose" | "other" | null>(null);
+  const [enrollmentEmployee, setEnrollmentEmployee] = useState<Employee | null>(null);
+  const [enrollmentOptions, setEnrollmentOptions] = useState<BiometricMethod[]>([]);
   const [cardOpacity] = useState(() => new Animated.Value(0));
   const { signIn } = useSession();
   const router = useRouter();
 
   useEffect(() => {
-    void isBiometricLoginEnabled().then(setBiometricEnabled);
+    let active = true;
+    void (async () => {
+      const [enabled, availability] = await Promise.all([
+        getEnabledBiometricMethods(),
+        getBiometricAvailability(),
+      ]);
+      if (!active) return;
+      setEnabledMethods(enabled.filter((method) => availability.types.includes(method)));
+      setAvailableMethods(availability.types);
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -74,34 +95,71 @@ export default function LoginScreen() {
   };
 
   const finishLogin = async (employee: Employee) => {
-    if (!(await isBiometricLoginEnabled())) {
-      const availability = await getBiometricAvailability();
-      if (availability.available) {
-        Alert.alert(
-          "Enable Biometric Login?",
-          "Use your device fingerprint or face to sign in next time.",
-          [
-            { text: "Not Now", onPress: () => { signIn(employee); router.replace("/home" as never); } },
-            { text: "Enable", onPress: () => { void enableBiometricLogin(employee.username).then((enabled) => { setBiometricEnabled(enabled); signIn(employee); router.replace("/home" as never); }); } },
-          ],
-          { cancelable: false },
-        );
-        return;
-      }
+    const [enabled, handled, availability] = await Promise.all([
+      getEnabledBiometricMethods(),
+      wasBiometricEnrollmentHandled(employee.username),
+      getBiometricAvailability(),
+    ]);
+    setEnabledMethods(enabled.filter((method) => availability.types.includes(method)));
+    setAvailableMethods(availability.types);
+    if (enabled.length === 0 && !handled && availability.available) {
+      setEnrollmentEmployee(employee);
+      setEnrollmentStep("offer");
+      return;
     }
+    goHome(employee);
+  };
+
+  const goHome = (employee: Employee) => {
     signIn(employee);
     router.replace("/home" as never);
   };
 
-  const loginWithBiometrics = async () => {
-    if (!biometricEnabled) {
+  const continueWithoutBiometrics = async () => {
+    if (enrollmentEmployee) {
+      await markBiometricEnrollmentHandled(enrollmentEmployee.username).catch(() => undefined);
+      goHome(enrollmentEmployee);
+    }
+    setEnrollmentStep(null);
+  };
+
+  const chooseBiometricMethod = async (method: BiometricMethod) => {
+    if (!enrollmentEmployee) return;
+    setBiometricBusy(true);
+    const enrolled = await registerBiometricMethod(enrollmentEmployee.username, method);
+    setBiometricBusy(false);
+    if (!enrolled) {
+      Alert.alert(
+        "Biometric setup not completed",
+        "Authentication was cancelled or unavailable. You can continue with your ERP password and try again from the home menu.",
+      );
+      await continueWithoutBiometrics();
+      return;
+    }
+
+    const next = await getEnabledBiometricMethods();
+    setEnabledMethods(next);
+    const remaining = availableMethods.filter((candidate) => !next.includes(candidate));
+    if (remaining.length > 0) {
+      setEnrollmentOptions(remaining);
+      setEnrollmentStep("other");
+      return;
+    }
+    goHome(enrollmentEmployee);
+    setEnrollmentStep(null);
+  };
+
+  const nextBiometricMethod = enrollmentOptions[0];
+
+  const loginWithBiometrics = async (method: BiometricMethod) => {
+    if (enabledMethods.length === 0) {
       setError("Sign in with your ERP username and password first, then enable biometric login.");
       return;
     }
     setBiometricBusy(true);
     setError("");
     try {
-      const result = await readBiometricLoginCredential();
+      const result = await readBiometricLoginCredential(method);
       if (result.status === "success") {
         const employee = await authenticationService.authenticateWithBiometricCredential(result.credential);
         if (employee) {
@@ -110,6 +168,8 @@ export default function LoginScreen() {
         } else {
           setError("Account not found. Please sign in with your ERP credentials.");
         }
+      } else if (result.status === "method-unavailable") {
+        setError(`${getBiometricMethodLabel(method)} is no longer available on this device. Use your ERP credentials or re-enable it from the home menu.`);
       } else {
         setError("Biometric login was cancelled or is unavailable. Use your ERP credentials.");
       }
@@ -118,13 +178,6 @@ export default function LoginScreen() {
     } finally {
       setBiometricBusy(false);
     }
-  };
-
-  const disableBiometrics = () => {
-    Alert.alert("Disable biometric login?", "You can sign in with your ERP credentials.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Disable", style: "destructive", onPress: () => { void clearBiometricLogin().then(() => setBiometricEnabled(false)); } },
-    ]);
   };
 
   return (
@@ -207,25 +260,33 @@ export default function LoginScreen() {
               <Text style={styles.orText}>Or</Text>
               <View style={styles.orLine} />
             </View>
-            <Pressable
-              style={({ pressed }) => [styles.biometricButton, pressed && styles.buttonPressed]}
-              onPress={loginWithBiometrics}
-              disabled={biometricBusy}
-              accessibilityRole="button"
-            >
-              <SymbolView name={{ ios: "touchid", android: "fingerprint", web: "fingerprint" }} tintColor="#075A34" size={27} />
-              <View style={styles.biometricDivider} />
-              <Text style={styles.biometricText}>
-                {biometricBusy ? "Waiting for authentication..." : "Login with Biometrics"}
-              </Text>
-            </Pressable>
-            {biometricEnabled && (
-              <Pressable onPress={disableBiometrics} style={styles.disableButton}>
-                <Text style={styles.disableText}>Disable biometric login</Text>
-                <View style={styles.toggleTrack}>
-                  <View style={styles.toggleKnob} />
-                </View>
+            {enabledMethods.map((method) => (
+              <Pressable
+                key={method}
+                style={({ pressed }) => [styles.biometricButton, pressed && styles.buttonPressed]}
+                onPress={() => void loginWithBiometrics(method)}
+                disabled={biometricBusy}
+                accessibilityRole="button"
+              >
+                <SymbolView
+                  name={{
+                    ios: getBiometricMethodIcon(method),
+                    android: method === 2 ? "face" : "fingerprint",
+                    web: method === 2 ? "face" : "fingerprint",
+                  }}
+                  tintColor="#075A34"
+                  size={27}
+                />
+                <View style={styles.biometricDivider} />
+                <Text style={styles.biometricText}>
+                  {biometricBusy ? "Waiting for authentication..." : `Login with ${getBiometricMethodLabel(method)}`}
+                </Text>
               </Pressable>
+            ))}
+            {enabledMethods.length > 0 && (
+              <Text style={styles.biometricNote}>
+                Verification uses your device’s native prompt, which may accept any enrolled biometric.
+              </Text>
             )}
             <Text style={styles.demo}>
               Demo accounts: eva001â€“eva100 Â· Password: EVA@123
@@ -233,6 +294,101 @@ export default function LoginScreen() {
           </Animated.View>
         </ScrollView>
       </View>
+      <Modal
+        visible={enrollmentStep !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => void continueWithoutBiometrics()}
+      >
+        <View style={styles.enrollmentBackdrop}>
+          <View style={styles.enrollmentCard}>
+            {enrollmentStep === "offer" ? (
+              <>
+                <Text style={styles.enrollmentTitle}>Enable Biometric Login?</Text>
+                <Text style={styles.enrollmentSubtitle}>
+                  Enjoy faster and more secure access to your EVA Foods account.
+                </Text>
+                <Pressable
+                  style={styles.enrollmentPrimary}
+                  onPress={() => setEnrollmentStep("choose")}
+                >
+                  <Text style={styles.enrollmentPrimaryText}>Enable</Text>
+                </Pressable>
+                <Pressable style={styles.enrollmentSecondary} onPress={() => void continueWithoutBiometrics()}>
+                  <Text style={styles.enrollmentSecondaryText}>Not Now</Text>
+                </Pressable>
+              </>
+            ) : enrollmentStep === "other" ? (
+              <>
+                <Text style={styles.enrollmentTitle}>
+                  {nextBiometricMethod ? `Enable ${getBiometricMethodLabel(nextBiometricMethod)}?` : "Add another method?"}
+                </Text>
+                <Text style={styles.enrollmentSubtitle}>
+                  {nextBiometricMethod
+                    ? `Would you also like to enable ${getBiometricMethodLabel(nextBiometricMethod)}?`
+                    : "Would you also like to enable the other biometric option?"}
+                </Text>
+                <Pressable
+                  style={styles.enrollmentPrimary}
+                  onPress={() => setEnrollmentStep("choose")}
+                >
+                  <Text style={styles.enrollmentPrimaryText}>
+                    {nextBiometricMethod ? `Enable ${getBiometricMethodLabel(nextBiometricMethod)}` : "Add Another Method"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={styles.enrollmentSecondary}
+                  onPress={() => {
+                    if (enrollmentEmployee) goHome(enrollmentEmployee);
+                    setEnrollmentStep(null);
+                  }}
+                >
+                  <Text style={styles.enrollmentSecondaryText}>Skip</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.enrollmentTitle}>Choose a method</Text>
+                <Text style={styles.enrollmentSubtitle}>
+                  Choose which biometric login option to enable. Your device handles verification and may accept any biometric enrolled on it.
+                </Text>
+                {availableMethods
+                  .filter((method) => !enabledMethods.includes(method))
+                  .filter((method) => enrollmentOptions.length === 0 || enrollmentOptions.includes(method))
+                  .map((method) => (
+                    <Pressable
+                      key={method}
+                      style={styles.methodChoice}
+                      onPress={() => void chooseBiometricMethod(method)}
+                      disabled={biometricBusy}
+                    >
+                      <SymbolView
+                        name={{
+                          ios: getBiometricMethodIcon(method),
+                          android: method === 2 ? "face" : "fingerprint",
+                          web: method === 2 ? "face" : "fingerprint",
+                        }}
+                        tintColor="#075A34"
+                        size={26}
+                      />
+                      <Text style={styles.methodChoiceText}>
+                        {biometricBusy ? "Verifying..." : getBiometricMethodLabel(method)}
+                      </Text>
+                    </Pressable>
+                  ))}
+                {(availableMethods.length === 0 || availableMethods.every((method) => enabledMethods.includes(method))) && (
+                  <Text style={styles.enrollmentSubtitle}>
+                    No additional enrolled biometric method is available. You can continue using your ERP password.
+                  </Text>
+                )}
+                <Pressable style={styles.enrollmentSecondary} onPress={() => void continueWithoutBiometrics()}>
+                  <Text style={styles.enrollmentSecondaryText}>Continue</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -331,10 +487,17 @@ const styles = StyleSheet.create({
   biometricButton: { minHeight: 58, borderRadius: 30, borderWidth: 1.5, borderColor: "#075A34", backgroundColor: "rgba(255,255,255,0.9)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 14, marginTop: 12 },
   biometricDivider: { width: 1, height: 30, backgroundColor: "#075A34" },
   biometricText: { color: "#075A34", fontSize: 15, fontWeight: "700" },
-  disableButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, paddingTop: 12 },
-  disableText: { color: "#526056", fontSize: 13 },
-  toggleTrack: { width: 42, height: 24, borderRadius: 12, backgroundColor: "#087343", justifyContent: "center", padding: 3 },
-  toggleKnob: { width: 18, height: 18, borderRadius: 9, backgroundColor: "white", alignSelf: "flex-end" },
+  biometricNote: { color: "#66776F", fontSize: 11, textAlign: "center", lineHeight: 16, marginTop: 8 },
   error: { color: "#c62b3c", marginBottom: 10 },
   demo: { fontSize: 12, color: "#66768a", textAlign: "center", marginTop: 18 },
+  enrollmentBackdrop: { flex: 1, backgroundColor: "rgba(8,28,19,0.55)", justifyContent: "center", padding: 24 },
+  enrollmentCard: { backgroundColor: "#FFFCF4", borderRadius: 24, padding: 24, gap: 12, elevation: 12 },
+  enrollmentTitle: { fontSize: 21, color: "#104B35", fontWeight: "800", textAlign: "center" },
+  enrollmentSubtitle: { fontSize: 14, color: "#526056", lineHeight: 21, textAlign: "center", marginBottom: 6 },
+  enrollmentPrimary: { minHeight: 48, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#087343" },
+  enrollmentPrimaryText: { color: "white", fontSize: 15, fontWeight: "800" },
+  enrollmentSecondary: { minHeight: 44, alignItems: "center", justifyContent: "center" },
+  enrollmentSecondaryText: { color: "#176B45", fontSize: 14, fontWeight: "700" },
+  methodChoice: { flexDirection: "row", alignItems: "center", gap: 14, borderColor: "#DCE7DF", borderWidth: 1, backgroundColor: "white", padding: 16, borderRadius: 16 },
+  methodChoiceText: { color: "#104B35", fontSize: 16, fontWeight: "700" },
 });
