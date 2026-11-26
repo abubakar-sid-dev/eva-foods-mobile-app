@@ -69,8 +69,8 @@ export default function ExploreScreen() {
 
           <Collapsible title="Attendance history">
             <ThemedText type="small">
-              Choose a month and year to review your attendance history,
-              working days, and check-in details.
+              Choose a month and year to review your attendance history, working
+              days, and check-in details.
             </ThemedText>
           </Collapsible>
 

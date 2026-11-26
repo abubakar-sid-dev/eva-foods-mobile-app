@@ -1,14 +1,7 @@
-import { useState } from "react";
-import { SymbolView } from "expo-symbols";
 import { useRouter } from "expo-router";
-import { Alert, Modal } from "react-native";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { SymbolView } from "expo-symbols";
+import { useState } from "react";
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
@@ -40,7 +33,11 @@ export default function HomeScreen() {
           <Text style={styles.welcome}>Welcome</Text>
           <View style={styles.notification}>
             <SymbolView
-              name={{ ios: "bell", android: "notifications", web: "notifications" }}
+              name={{
+                ios: "bell",
+                android: "notifications",
+                web: "notifications",
+              }}
               tintColor="white"
               size={22}
             />
@@ -49,7 +46,11 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.profile}>
-          <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={60} />
+          <EmployeeAvatar
+            name={employee.name}
+            profileImage={employee.profileImage}
+            size={60}
+          />
           <View style={styles.profileCopy}>
             <Text style={styles.name}>{employee.name}</Text>
             <Text style={styles.designation}>{employee.designation}</Text>
@@ -125,27 +126,84 @@ export default function HomeScreen() {
           </Pressable>
         </View>
       </ScrollView>
-      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
         <View style={styles.drawerBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMenuVisible(false)} />
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setMenuVisible(false)}
+          />
           <View style={styles.drawer}>
             <View style={styles.drawerProfile}>
-              <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={48} />
+              <EmployeeAvatar
+                name={employee.name}
+                profileImage={employee.profileImage}
+                size={48}
+              />
               <View style={styles.profileCopy}>
                 <Text style={styles.drawerName}>{employee.name}</Text>
-                <Text style={styles.drawerDesignation}>{employee.designation}</Text>
+                <Text style={styles.drawerDesignation}>
+                  {employee.designation}
+                </Text>
               </View>
             </View>
-            <DrawerItem label="Home" onPress={() => { setMenuVisible(false); router.replace("/home" as never); }} />
-            <DrawerItem label="My Profile" pending onPress={() => setMenuVisible(false)} />
-            <DrawerItem label="Settings" pending onPress={() => setMenuVisible(false)} />
-            <DrawerItem label="Help & Support" pending onPress={() => setMenuVisible(false)} />
-            <DrawerItem label="Biometric Login" onPress={() => { setMenuVisible(false); router.push("/biometrics" as never); }} />
+            <DrawerItem
+              label="Home"
+              onPress={() => {
+                setMenuVisible(false);
+                router.replace("/home" as never);
+              }}
+            />
+            <DrawerItem
+              label="My Profile"
+              onPress={() => {
+                setMenuVisible(false);
+                router.push({
+                  pathname: "/profile",
+                  params: { employeeCode: employee.employeeCode },
+                });
+              }}
+            />
+            <DrawerItem
+              label="Settings"
+              pending
+              onPress={() => setMenuVisible(false)}
+            />
+            <DrawerItem
+              label="Help & Support"
+              pending
+              onPress={() => setMenuVisible(false)}
+            />
+            <DrawerItem
+              label="Biometric Login"
+              onPress={() => {
+                setMenuVisible(false);
+                router.push("/biometrics" as never);
+              }}
+            />
             <View style={styles.drawerDivider} />
-            <DrawerItem label="Logout" destructive onPress={() => Alert.alert("Log out?", "Are you sure you want to log out?", [
-              { text: "Cancel", style: "cancel" },
-              { text: "Logout", style: "destructive", onPress: () => { setMenuVisible(false); signOut(); router.replace("/" as never); } },
-            ])} />
+            <DrawerItem
+              label="Logout"
+              destructive
+              onPress={() =>
+                Alert.alert("Log out?", "Are you sure you want to log out?", [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Logout",
+                    style: "destructive",
+                    onPress: () => {
+                      setMenuVisible(false);
+                      signOut();
+                      router.replace("/" as never);
+                    },
+                  },
+                ])
+              }
+            />
           </View>
         </View>
       </Modal>
@@ -153,9 +211,20 @@ export default function HomeScreen() {
   );
 }
 
-type DrawerLabel = "Home" | "My Profile" | "Settings" | "Help & Support" | "Biometric Login" | "Logout";
+type DrawerLabel =
+  | "Home"
+  | "My Profile"
+  | "Settings"
+  | "Help & Support"
+  | "Biometric Login"
+  | "Logout";
 
-function DrawerItem({ label, onPress, pending = false, destructive = false }: {
+function DrawerItem({
+  label,
+  onPress,
+  pending = false,
+  destructive = false,
+}: {
   label: DrawerLabel;
   onPress: () => void;
   pending?: boolean;
@@ -165,14 +234,36 @@ function DrawerItem({ label, onPress, pending = false, destructive = false }: {
     Home: { ios: "house", android: "home", web: "home" },
     "My Profile": { ios: "person", android: "person", web: "person" },
     Settings: { ios: "gearshape", android: "settings", web: "settings" },
-    "Help & Support": { ios: "questionmark.circle", android: "help", web: "help" },
-    "Biometric Login": { ios: "faceid", android: "fingerprint", web: "fingerprint" },
-    Logout: { ios: "rectangle.portrait.and.arrow.right", android: "logout", web: "logout" },
+    "Help & Support": {
+      ios: "questionmark.circle",
+      android: "help",
+      web: "help",
+    },
+    "Biometric Login": {
+      ios: "faceid",
+      android: "fingerprint",
+      web: "fingerprint",
+    },
+    Logout: {
+      ios: "rectangle.portrait.and.arrow.right",
+      android: "logout",
+      web: "logout",
+    },
   } as const;
   return (
-    <Pressable onPress={onPress} style={styles.drawerItem} accessibilityRole="button">
-      <SymbolView name={iconNames[label]} tintColor={destructive ? "#B33B3B" : "#176B45"} size={21} />
-      <Text style={[styles.drawerItemText, destructive && styles.logoutText]}>{label}</Text>
+    <Pressable
+      onPress={onPress}
+      style={styles.drawerItem}
+      accessibilityRole="button"
+    >
+      <SymbolView
+        name={iconNames[label]}
+        tintColor={destructive ? "#B33B3B" : "#176B45"}
+        size={21}
+      />
+      <Text style={[styles.drawerItemText, destructive && styles.logoutText]}>
+        {label}
+      </Text>
       {pending && <Text style={styles.pendingTag}>Pending</Text>}
     </Pressable>
   );
@@ -313,13 +404,52 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.86, transform: [{ scale: 0.99 }] },
   drawerBackdrop: { flex: 1, backgroundColor: "rgba(10,25,18,0.45)" },
-  drawer: { width: "82%", maxWidth: 340, flex: 1, backgroundColor: "#FFFFFF", paddingTop: 52, paddingHorizontal: 18, elevation: 20 },
-  drawerProfile: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#104B35", marginHorizontal: -18, marginTop: -52, paddingHorizontal: 20, paddingTop: 60, paddingBottom: 20, marginBottom: 16 },
+  drawer: {
+    width: "82%",
+    maxWidth: 340,
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    paddingTop: 52,
+    paddingHorizontal: 18,
+    elevation: 20,
+  },
+  drawerProfile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#104B35",
+    marginHorizontal: -18,
+    marginTop: -52,
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
+    marginBottom: 16,
+  },
   drawerName: { color: "white", fontSize: 16, fontWeight: "800" },
   drawerDesignation: { color: "#D9E9DF", fontSize: 12, marginTop: 3 },
-  drawerItem: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 8 },
-  drawerItemText: { flex: 1, color: "#17352B", fontSize: 15, fontWeight: "600" },
-  pendingTag: { color: "#8C721F", backgroundColor: "#FFF5D7", overflow: "hidden", borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: "700" },
+  drawerItem: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 8,
+  },
+  drawerItemText: {
+    flex: 1,
+    color: "#17352B",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  pendingTag: {
+    color: "#8C721F",
+    backgroundColor: "#FFF5D7",
+    overflow: "hidden",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 10,
+    fontWeight: "700",
+  },
   drawerDivider: { height: 1, backgroundColor: "#E6ECE8", marginVertical: 10 },
   logoutText: { color: "#B33B3B" },
 });

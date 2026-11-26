@@ -1,7 +1,14 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SymbolView } from "expo-symbols";
+import { useCallback, useState } from "react";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
@@ -20,7 +27,9 @@ export default function BiometricSettingsScreen() {
   const router = useRouter();
   const [available, setAvailable] = useState<BiometricMethod[]>([]);
   const [enabled, setEnabled] = useState<BiometricMethod[]>([]);
-  const [loadingMethod, setLoadingMethod] = useState<BiometricMethod | null>(null);
+  const [loadingMethod, setLoadingMethod] = useState<BiometricMethod | null>(
+    null,
+  );
 
   const refresh = useCallback(async () => {
     const [availability, configured] = await Promise.all([
@@ -28,7 +37,9 @@ export default function BiometricSettingsScreen() {
       getEnabledBiometricMethods(),
     ]);
     setAvailable(availability.types);
-    setEnabled(configured.filter((method) => availability.types.includes(method)));
+    setEnabled(
+      configured.filter((method) => availability.types.includes(method)),
+    );
   }, []);
 
   useFocusEffect(
@@ -63,30 +74,41 @@ export default function BiometricSettingsScreen() {
           text: "Disable",
           style: "destructive",
           onPress: () => {
-            void removeBiometricMethod(method).then(refresh).catch(() => {
-              Alert.alert("Unable to update", "Please try again.");
-            });
+            void removeBiometricMethod(method)
+              .then(refresh)
+              .catch(() => {
+                Alert.alert("Unable to update", "Please try again.");
+              });
           },
         },
       ],
     );
   };
 
-  const emptyReason = available.length > 0
-    ? "No biometric method is currently enrolled in EVA Foods."
-    : "No supported, enrolled biometric method was found on this device. You can still sign in with your ERP username and password.";
+  const emptyReason =
+    available.length > 0
+      ? "No biometric method is currently enrolled in EVA Foods."
+      : "No supported, enrolled biometric method was found on this device. You can still sign in with your ERP username and password.";
 
   return (
     <SafeAreaView style={styles.root}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backButton} accessibilityLabel="Go back">
+        <Pressable
+          onPress={() => router.back()}
+          style={styles.backButton}
+          accessibilityLabel="Go back"
+        >
           <Text style={styles.back}>‹</Text>
         </Pressable>
         <Text style={styles.heading}>Security & Biometrics</Text>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.intro}>Manage the biometric methods available for this device.</Text>
-        {available.length === 0 ? <Text style={styles.empty}>{emptyReason}</Text> : null}
+        <Text style={styles.intro}>
+          Manage the biometric methods available for this device.
+        </Text>
+        {available.length === 0 ? (
+          <Text style={styles.empty}>{emptyReason}</Text>
+        ) : null}
         {available.map((method) => {
           const isEnabled = enabled.includes(method);
           return (
@@ -103,24 +125,41 @@ export default function BiometricSettingsScreen() {
                 />
               </View>
               <View style={styles.methodCopy}>
-                <Text style={styles.methodTitle}>{getBiometricMethodLabel(method)}</Text>
-                <Text style={styles.methodStatus}>{isEnabled ? "Enabled on this device" : "Available to enable"}</Text>
+                <Text style={styles.methodTitle}>
+                  {getBiometricMethodLabel(method)}
+                </Text>
+                <Text style={styles.methodStatus}>
+                  {isEnabled ? "Enabled on this device" : "Available to enable"}
+                </Text>
               </View>
               <Pressable
-                onPress={() => isEnabled ? confirmRemove(method) : void addMethod(method)}
+                onPress={() =>
+                  isEnabled ? confirmRemove(method) : void addMethod(method)
+                }
                 disabled={loadingMethod !== null}
                 style={[styles.action, isEnabled && styles.disableAction]}
                 accessibilityRole="button"
               >
-                <Text style={[styles.actionText, isEnabled && styles.disableActionText]}>
-                  {loadingMethod === method ? "Verifying…" : isEnabled ? "Disable" : "Enable"}
+                <Text
+                  style={[
+                    styles.actionText,
+                    isEnabled && styles.disableActionText,
+                  ]}
+                >
+                  {loadingMethod === method
+                    ? "Verifying…"
+                    : isEnabled
+                      ? "Disable"
+                      : "Enable"}
                 </Text>
               </Pressable>
             </View>
           );
         })}
         <Text style={styles.note}>
-          Your device displays its own biometric prompt and chooses which enrolled scan to use. EVA Foods does not access or store biometric templates.
+          Your device displays its own biometric prompt and chooses which
+          enrolled scan to use. EVA Foods does not access or store biometric
+          templates.
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -129,19 +168,57 @@ export default function BiometricSettingsScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#F4F7F4" },
-  header: { backgroundColor: "#104B35", minHeight: 60, flexDirection: "row", alignItems: "center", paddingHorizontal: 18, gap: 10 },
+  header: {
+    backgroundColor: "#104B35",
+    minHeight: 60,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    gap: 10,
+  },
   backButton: { padding: 6 },
   back: { color: "white", fontSize: 30, lineHeight: 32 },
   heading: { color: "white", fontSize: 18, fontWeight: "800" },
   content: { padding: 20, gap: 14 },
   intro: { color: "#53655B", fontSize: 14, lineHeight: 21, marginBottom: 4 },
-  empty: { color: "#53655B", backgroundColor: "white", borderRadius: 18, padding: 18, lineHeight: 22 },
-  methodCard: { minHeight: 86, padding: 14, backgroundColor: "white", borderColor: "#DCE7DF", borderWidth: 1, borderRadius: 18, flexDirection: "row", alignItems: "center", gap: 12 },
-  iconTile: { width: 48, height: 48, borderRadius: 15, backgroundColor: "#E4F3E9", alignItems: "center", justifyContent: "center" },
+  empty: {
+    color: "#53655B",
+    backgroundColor: "white",
+    borderRadius: 18,
+    padding: 18,
+    lineHeight: 22,
+  },
+  methodCard: {
+    minHeight: 86,
+    padding: 14,
+    backgroundColor: "white",
+    borderColor: "#DCE7DF",
+    borderWidth: 1,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  iconTile: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: "#E4F3E9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   methodCopy: { flex: 1 },
   methodTitle: { color: "#17352B", fontSize: 15, fontWeight: "800" },
   methodStatus: { color: "#66776F", fontSize: 12, marginTop: 4 },
-  action: { minWidth: 76, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, paddingVertical: 9, borderRadius: 14, backgroundColor: "#176B45" },
+  action: {
+    minWidth: 76,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: "#176B45",
+  },
   actionText: { color: "white", fontSize: 12, fontWeight: "800" },
   disableAction: { backgroundColor: "#FFF1E8" },
   disableActionText: { color: "#A44B30" },

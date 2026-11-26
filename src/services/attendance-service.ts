@@ -1,14 +1,18 @@
 import {
   getCompanyHolidaysForYear,
   getEmployeeAttendanceForYear,
+  getAllEmployees,
+  getAllAttendance,
   initializeDatabase,
   seedAttendance,
 } from "@/database/database";
-import type { Attendance, CompanyHoliday } from "@/types/hrms";
+import type { Attendance, CompanyHoliday, Employee } from "@/types/hrms";
 
 export interface AttendanceService {
   loadEmployeeYear(employeeCode: string, year: number): Promise<Attendance[]>;
   getCompanyHolidays(year: number): Promise<CompanyHoliday[]>;
+  loadEmployees(): Promise<Employee[]>;
+  loadAllAttendance(): Promise<Attendance[]>;
 }
 
 const demoAttendanceService: AttendanceService = {
@@ -20,6 +24,15 @@ const demoAttendanceService: AttendanceService = {
   async getCompanyHolidays(year) {
     await initializeDatabase();
     return getCompanyHolidaysForYear(year);
+  },
+  async loadEmployees() {
+    await initializeDatabase();
+    return getAllEmployees();
+  },
+  async loadAllAttendance() {
+    await initializeDatabase();
+    await seedAttendance();
+    return getAllAttendance();
   },
 };
 

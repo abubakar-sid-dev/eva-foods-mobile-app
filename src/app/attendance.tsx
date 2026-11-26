@@ -1,13 +1,14 @@
-import { useCallback, useMemo, useState } from "react";
 import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import Animated, {
@@ -18,15 +19,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { attendanceService } from "@/services/attendance-service";
+import type { Attendance, Employee } from "@/types/hrms";
 import {
   buildDailyAttendanceDetails,
   getAttendanceCounts,
-  type CompanyHoliday,
   type AttendanceCounts,
+  type CompanyHoliday,
   type DailyAttendance,
 } from "@/utils/attendance-calculations";
-import { attendanceService } from "@/services/attendance-service";
-import type { Attendance } from "@/types/hrms";
 
 type ViewMode = "monthly" | "yearly";
 type CalendarTarget = "from" | "to";
@@ -49,26 +50,109 @@ export default function AttendanceScreen() {
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget>("from");
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
-  const [customApplied, setCustomApplied] = useState(false);
+  const [fromDate, setFromDate] = useState(() => getCurrentMonthRange().from);
+  const [toDate, setToDate] = useState(() => getCurrentMonthRange().to);
+  const [appliedFromDate, setAppliedFromDate] = useState(
+    () => getCurrentMonthRange().from,
+  );
+  const [appliedToDate, setAppliedToDate] = useState(
+    () => getCurrentMonthRange().to,
+  );
+  const [customApplied, setCustomApplied] = useState(true);
   const [rangeRows, setRangeRows] = useState<Attendance[]>([]);
   const [rangeHolidays, setRangeHolidays] = useState<CompanyHoliday[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [allRows, setAllRows] = useState<Attendance[]>([]);
+  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(
+    employee,
+  );
+  const [selectedDesignation, setSelectedDesignation] = useState(
+    employee?.designation ?? "",
+  );
+  const [selectedDepartment, setSelectedDepartment] = useState(
+    employee?.department ?? "",
+  );
+  const [selectionPicker, setSelectionPicker] = useState<
+    "employee" | "designation" | "department" | null
+  >(null);
+  const [selectionSearch, setSelectionSearch] = useState("");
+  const [manualGroupFilters, setManualGroupFilters] = useState(false);
+  const initialRangePending = useRef(true);
+  const isHrAdmin = employee?.role === "HR" || employee?.role === "Admin";
+  const attendanceEmployee = isHrAdmin ? selectedEmployee : employee;
 
   const loadYear = useCallback(async () => {
-    if (!employee) return;
+    if (!attendanceEmployee) return;
     setLoading(true);
     try {
-      const [attendance, companyHolidays] = await Promise.all([
-        attendanceService.loadEmployeeYear(employee.employeeCode, year),
+      let [attendance, companyHolidays] = await Promise.all([
+        attendanceService.loadEmployeeYear(
+          attendanceEmployee.employeeCode,
+          year,
+        ),
         attendanceService.getCompanyHolidays(year),
       ]);
       setYearRows(attendance);
       setHolidays(companyHolidays);
+
+      if (initialRangePending.current) {
+        const defaultRange = getCurrentMonthRange();
+        const defaultYear = new Date().getFullYear();
+        if (year !== defaultYear) {
+          [attendance, companyHolidays] = await Promise.all([
+            attendanceService.loadEmployeeYear(
+              attendanceEmployee.employeeCode,
+              defaultYear,
+            ),
+            attendanceService.getCompanyHolidays(defaultYear),
+          ]);
+        }
+
+        setFromDate(defaultRange.from);
+        setToDate(defaultRange.to);
+        setAppliedFromDate(defaultRange.from);
+        setAppliedToDate(defaultRange.to);
+        setRangeRows(attendance);
+        setRangeHolidays(companyHolidays);
+        setCustomApplied(true);
+        initialRangePending.current = false;
+      }
     } finally {
       setLoading(false);
     }
-  }, [employee, year]);
+  }, [attendanceEmployee, employee, year]);
+
+  useFocusEffect(
+    useCallback(() => {
+      initialRangePending.current = true;
+      const defaultRange = getCurrentMonthRange();
+      setFromDate(defaultRange.from);
+      setToDate(defaultRange.to);
+      setAppliedFromDate(defaultRange.from);
+      setAppliedToDate(defaultRange.to);
+      setCustomApplied(true);
+      setManualGroupFilters(false);
+      if (employee && (employee.role === "HR" || employee.role === "Admin")) {
+        setSelectedEmployee(employee);
+        setSelectedDesignation(employee.designation);
+        setSelectedDepartment(employee.department);
+        void Promise.all([
+          attendanceService.loadEmployees(),
+          attendanceService.loadAllAttendance(),
+        ])
+          .then(([availableEmployees, attendance]) => {
+            setEmployees(availableEmployees);
+            setAllRows(attendance);
+          })
+          .catch(() =>
+            Alert.alert(
+              "Unable to load attendance",
+              "Please reopen the Attendance screen.",
+            ),
+          );
+      }
+    }, [employee]),
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -79,8 +163,11 @@ export default function AttendanceScreen() {
   const now = new Date();
   const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const joiningDate = useMemo(
-    () => (employee ? new Date(`${employee.joiningDate}T00:00:00`) : now),
-    [employee, now.getFullYear(), now.getMonth(), now.getDate()],
+    () =>
+      attendanceEmployee
+        ? new Date(`${attendanceEmployee.joiningDate}T00:00:00`)
+        : now,
+    [attendanceEmployee, now.getFullYear(), now.getMonth(), now.getDate()],
   );
   const firstAvailableMonth = new Date(
     joiningDate.getFullYear(),
@@ -102,43 +189,130 @@ export default function AttendanceScreen() {
   const dailyDetails = buildDailyAttendanceDetails(
     year,
     month.getMonth(),
-    employee?.joiningDate ?? formatDate(now),
+    attendanceEmployee?.joiningDate ?? formatDate(now),
     monthRows,
     holidays,
     now,
   );
   const rangeDetails = useMemo(
-    () => buildDateRangeDetails(
-      fromDate,
-      toDate,
-      employee?.joiningDate ?? formatDate(now),
+    () =>
+      buildDateRangeDetails(
+        appliedFromDate,
+        appliedToDate,
+        attendanceEmployee?.joiningDate ?? formatDate(now),
+        isHrAdmin
+          ? allRows.filter(
+              (row) => row.employeeCode === attendanceEmployee?.employeeCode,
+            )
+          : rangeRows,
+        rangeHolidays,
+        now,
+      ),
+    [
+      appliedFromDate,
+      appliedToDate,
+      attendanceEmployee?.employeeCode,
+      attendanceEmployee?.joiningDate,
+      isHrAdmin,
+      allRows,
       rangeRows,
       rangeHolidays,
       now,
-    ),
-    [fromDate, toDate, employee?.joiningDate, rangeRows, rangeHolidays, now],
+    ],
   );
-  const visibleDetails = customApplied
-    ? rangeDetails
-    : dailyDetails;
+  const visibleDetails = customApplied ? rangeDetails : dailyDetails;
   const visibleCounts = getAttendanceCounts(visibleDetails);
   const visibleDays = visibleDetails.length;
 
-  const monthlySummaries = employee ? MONTHS.map((monthIndex) => {
-    const details = buildDailyAttendanceDetails(
-      year,
-      monthIndex,
-      employee.joiningDate,
-      yearRows,
-      holidays,
-      now,
+  const groupEmployees = useMemo(() => {
+    if (!isHrAdmin || !employee) return [];
+    if (!selectedDesignation && !selectedDepartment)
+      return selectedEmployee ? [selectedEmployee] : [];
+    return employees.filter(
+      (candidate) =>
+        (!selectedDesignation ||
+          candidate.designation === selectedDesignation) &&
+        (!selectedDepartment || candidate.department === selectedDepartment),
     );
-    return {
-      monthIndex,
-      days: details.length,
-      counts: getAttendanceCounts(details),
-    };
-  }) : [];
+  }, [
+    isHrAdmin,
+    employee,
+    employees,
+    selectedEmployee,
+    selectedDesignation,
+    selectedDepartment,
+  ]);
+  const groupDetails = useMemo(() => {
+    if (!isHrAdmin || !employee) return [];
+    return groupEmployees.flatMap((candidate) => {
+      const rows = allRows.filter(
+        (row) =>
+          row.employeeCode === candidate.employeeCode &&
+          row.attendanceDate >= appliedFromDate &&
+          row.attendanceDate <= appliedToDate,
+      );
+      return buildDateRangeDetails(
+        appliedFromDate,
+        appliedToDate,
+        candidate.joiningDate,
+        rows,
+        rangeHolidays,
+        now,
+      ).map((detail) => ({
+        ...detail,
+        employeeName: candidate.name,
+        employeeCode: candidate.employeeCode,
+      }));
+    });
+  }, [
+    isHrAdmin,
+    employee,
+    groupEmployees,
+    allRows,
+    appliedFromDate,
+    appliedToDate,
+    rangeHolidays,
+    now,
+  ]);
+  const groupSummaries = useMemo(
+    () =>
+      groupEmployees.map((candidate) => {
+        const details = groupDetails.filter(
+          (detail) => detail.employeeCode === candidate.employeeCode,
+        );
+        const counts = getAttendanceCounts(details);
+        const accountedDays =
+          counts.present + counts.late + counts.absent + counts.leave;
+        return {
+          employee: candidate,
+          counts,
+          percentage: accountedDays
+            ? Math.round(((counts.present + counts.late) / accountedDays) * 100)
+            : 0,
+        };
+      }),
+    [groupEmployees, groupDetails],
+  );
+  const groupViewActive =
+    isHrAdmin && !!employee && (manualGroupFilters || !selectedEmployee);
+
+  const monthlySummaries = employee
+    ? MONTHS.map((monthIndex) => {
+        const details = buildDailyAttendanceDetails(
+          year,
+          monthIndex,
+          (attendanceEmployee ?? employee).joiningDate,
+          yearRows,
+          holidays,
+          now,
+        );
+        return {
+          monthIndex,
+          days: details.length,
+          counts: getAttendanceCounts(details),
+        };
+      })
+    : [];
   const yearSummary = monthlySummaries.reduce(
     (summary, monthSummary) => ({
       days: summary.days + monthSummary.days,
@@ -163,6 +337,7 @@ export default function AttendanceScreen() {
   );
 
   if (!employee) return null;
+  const profileEmployee = isHrAdmin ? (selectedEmployee ?? employee) : employee;
 
   const setSelectedMonth = (nextMonth: Date) => {
     if (nextMonth < firstAvailableMonth || nextMonth > currentMonth) return;
@@ -172,7 +347,8 @@ export default function AttendanceScreen() {
 
   const showCalendar = (target: CalendarTarget) => {
     setCalendarTarget(target);
-    const selected = parseDate(target === "from" ? fromDate : toDate) ?? new Date();
+    const selected =
+      parseDate(target === "from" ? fromDate : toDate) ?? new Date();
     setCalendarMonth(new Date(selected.getFullYear(), selected.getMonth(), 1));
     setCalendarVisible(true);
   };
@@ -181,10 +357,8 @@ export default function AttendanceScreen() {
     const value = formatDate(date);
     if (calendarTarget === "from") {
       setFromDate(value);
-      setCustomApplied(false);
     } else {
       setToDate(value);
-      setCustomApplied(false);
     }
     setCalendarVisible(false);
   };
@@ -194,15 +368,28 @@ export default function AttendanceScreen() {
     const to = parseDate(toDate);
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     if (!from || !to) {
-      Alert.alert("Choose both dates", "Select a From Date and a To Date first.");
+      Alert.alert(
+        "Choose both dates",
+        "Select a From Date and a To Date first.",
+      );
       return;
     }
     if (from > to) {
-      Alert.alert("Invalid date range", "From Date must be on or before To Date.");
+      Alert.alert(
+        "Invalid date range",
+        "From Date must be on or before To Date.",
+      );
       return;
     }
-    if (from < joiningDate || to > today) {
-      Alert.alert("Date range unavailable", "Choose dates from the employee's joining date through today.");
+    if (
+      (!isHrAdmin && from < joiningDate) ||
+      (isHrAdmin && attendanceEmployee && from < joiningDate) ||
+      to > today
+    ) {
+      Alert.alert(
+        "Date range unavailable",
+        "Choose dates from the employee's joining date through today.",
+      );
       return;
     }
 
@@ -212,18 +399,31 @@ export default function AttendanceScreen() {
         { length: to.getFullYear() - from.getFullYear() + 1 },
         (_, index) => from.getFullYear() + index,
       );
-      const results = await Promise.all(years.map(async (rangeYear) => {
-        const [rows, yearHolidays] = await Promise.all([
-          attendanceService.loadEmployeeYear(employee.employeeCode, rangeYear),
-          attendanceService.getCompanyHolidays(rangeYear),
-        ]);
-        return { rows, yearHolidays };
-      }));
+      const results = await Promise.all(
+        years.map(async (rangeYear) => {
+          const [rows, yearHolidays] = await Promise.all([
+            attendanceService.loadEmployeeYear(
+              (attendanceEmployee ?? employee).employeeCode,
+              rangeYear,
+            ),
+            attendanceService.getCompanyHolidays(rangeYear),
+          ]);
+          return { rows, yearHolidays };
+        }),
+      );
       setRangeRows(results.flatMap((result) => result.rows));
       setRangeHolidays(results.flatMap((result) => result.yearHolidays));
+      if (isHrAdmin) {
+        setAllRows(await attendanceService.loadAllAttendance());
+      }
+      setAppliedFromDate(fromDate);
+      setAppliedToDate(toDate);
       setCustomApplied(true);
     } catch {
-      Alert.alert("Unable to load attendance", "Please try applying the date range again.");
+      Alert.alert(
+        "Unable to load attendance",
+        "Please try applying the date range again.",
+      );
     } finally {
       setLoading(false);
     }
@@ -234,6 +434,34 @@ export default function AttendanceScreen() {
     setViewMode(nextMode);
   };
 
+  const chooseSelection = (value: string) => {
+    if (!employee) return;
+    if (selectionPicker === "employee") {
+      const nextEmployee = employees.find(
+        (candidate) => candidate.employeeCode === value,
+      );
+      setSelectedEmployee(nextEmployee ?? null);
+      setSelectedDesignation("");
+      setSelectedDepartment("");
+      setManualGroupFilters(!nextEmployee);
+    } else if (selectionPicker === "designation") {
+      setSelectedDesignation(value);
+      setManualGroupFilters(true);
+    } else if (selectionPicker === "department") {
+      setSelectedDepartment(value);
+      setManualGroupFilters(true);
+    }
+    setSelectionPicker(null);
+    setSelectionSearch("");
+  };
+
+  const resetHrFilters = () => {
+    setSelectedEmployee(employee);
+    setSelectedDesignation(employee.designation);
+    setSelectedDepartment(employee.department);
+    setManualGroupFilters(false);
+  };
+
   return (
     <SafeAreaView style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -241,66 +469,180 @@ export default function AttendanceScreen() {
           <View style={styles.top}>
             <Pressable
               onPress={() => router.back()}
-              style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+              style={({ pressed }) => [
+                styles.backButton,
+                pressed && styles.pressed,
+              ]}
               accessibilityRole="button"
               accessibilityLabel="Go back"
             >
               <Text style={styles.back}>‹</Text>
             </Pressable>
             <Text style={styles.heading}>Attendance</Text>
-            <View style={styles.modeSwitch}>
-              <ModeButton
-                label="Month"
-                selected={viewMode === "monthly"}
-                onPress={() => changeMode("monthly")}
-              />
-              <ModeButton
-                label="Year"
-                selected={viewMode === "yearly"}
-                onPress={() => changeMode("yearly")}
-              />
-            </View>
+            {!isHrAdmin && (
+              <View style={styles.modeSwitch}>
+                <ModeButton
+                  label="Month"
+                  selected={viewMode === "monthly"}
+                  onPress={() => changeMode("monthly")}
+                />
+                <ModeButton
+                  label="Year"
+                  selected={viewMode === "yearly"}
+                  onPress={() => changeMode("yearly")}
+                />
+              </View>
+            )}
           </View>
           <View style={styles.profile}>
-            <EmployeeAvatar name={employee.name} profileImage={employee.profileImage} size={66} />
+            <EmployeeAvatar
+              name={profileEmployee.name}
+              profileImage={profileEmployee.profileImage}
+              size={66}
+            />
             <View style={styles.divider} />
             <View style={styles.profileText}>
-              <Text style={styles.name}>{employee.name}</Text>
-              <Text style={styles.detail}>{employee.employeeCode}</Text>
-              <Text style={styles.detail}>{employee.designation}</Text>
+              <Text style={styles.name}>{profileEmployee.name}</Text>
+              <Text style={styles.detail}>{profileEmployee.employeeCode}</Text>
+              <Text style={styles.detail}>
+                {profileEmployee.designation} · {profileEmployee.department}
+              </Text>
             </View>
           </View>
         </View>
+
+        {isHrAdmin && (
+          <View style={styles.rangeCard}>
+            <Text style={styles.rangeTitle}>Attendance Filters</Text>
+            <SearchableSelection
+              label="Employee"
+              value={
+                selectedEmployee
+                  ? `${selectedEmployee.name} (${selectedEmployee.employeeCode})`
+                  : "All Employees"
+              }
+              onPress={() => {
+                setSelectionSearch("");
+                setSelectionPicker("employee");
+              }}
+            />
+            <SearchableSelection
+              label="Designation"
+              value={selectedDesignation}
+              onPress={() => {
+                setSelectionSearch("");
+                setSelectionPicker("designation");
+              }}
+            />
+            <SearchableSelection
+              label="Department"
+              value={selectedDepartment}
+              onPress={() => {
+                setSelectionSearch("");
+                setSelectionPicker("department");
+              }}
+            />
+            <Pressable onPress={resetHrFilters} style={styles.resetFilters}>
+              <Text style={styles.resetFiltersText}>
+                Reset to my attendance
+              </Text>
+            </Pressable>
+          </View>
+        )}
 
         <View style={styles.rangeCard}>
           <Text style={styles.rangeTitle}>Custom Date Range</Text>
           <View style={styles.rangeFields}>
-            <Pressable style={[styles.rangeDate, customApplied && styles.rangeDateApplied]} onPress={() => showCalendar("from")}>
+            <Pressable
+              style={[
+                styles.rangeDate,
+                customApplied && styles.rangeDateApplied,
+              ]}
+              onPress={() => showCalendar("from")}
+            >
               <Text style={styles.rangeCaption}>From Date</Text>
-              <Text style={styles.rangeValue}>{formatDateLabel(fromDate) || "Select date"}</Text>
+              <Text style={styles.rangeValue}>
+                {formatDateLabel(fromDate) || "Select date"}
+              </Text>
             </Pressable>
-            <Pressable style={[styles.rangeDate, customApplied && styles.rangeDateApplied]} onPress={() => showCalendar("to")}>
+            <Pressable
+              style={[
+                styles.rangeDate,
+                customApplied && styles.rangeDateApplied,
+              ]}
+              onPress={() => showCalendar("to")}
+            >
               <Text style={styles.rangeCaption}>To Date</Text>
-              <Text style={styles.rangeValue}>{formatDateLabel(toDate) || "Select date"}</Text>
+              <Text style={styles.rangeValue}>
+                {formatDateLabel(toDate) || "Select date"}
+              </Text>
             </Pressable>
           </View>
-          <Pressable style={styles.applyRange} onPress={() => void applyCustomRange()} disabled={loading}>
-            <Text style={styles.applyRangeText}>{loading && customApplied ? "Loading…" : "Apply Filter"}</Text>
+          <Pressable
+            style={styles.applyRange}
+            onPress={() => void applyCustomRange()}
+            disabled={loading}
+          >
+            <Text style={styles.applyRangeText}>
+              {loading && customApplied ? "Loading…" : "Apply Filter"}
+            </Text>
           </Pressable>
-          {customApplied && (
-            <Pressable style={styles.clearRange} onPress={() => setCustomApplied(false)}>
-              <Text style={styles.clearRangeText}>Clear custom filter</Text>
-            </Pressable>
-          )}
+          {customApplied &&
+            (fromDate !== appliedFromDate || toDate !== appliedToDate) && (
+              <Text style={styles.pendingRangeText}>
+                Apply changes to update the displayed attendance.
+              </Text>
+            )}
         </View>
 
-        {customApplied ? (
-          <Animated.View key={`range-${fromDate}-${toDate}`} entering={FadeInDown.duration(220)} style={styles.body}>
+        {isHrAdmin && !groupViewActive && (
+          <View style={styles.individualModeSwitch}>
+            <ModeButton
+              label="Month"
+              selected={viewMode === "monthly"}
+              onPress={() => changeMode("monthly")}
+            />
+            <ModeButton
+              label="Year"
+              selected={viewMode === "yearly"}
+              onPress={() => changeMode("yearly")}
+            />
+          </View>
+        )}
+
+        {isHrAdmin && groupViewActive ? (
+          <Animated.View
+            key={`admin-${selectedEmployee?.employeeCode}-${selectedDesignation}-${selectedDepartment}-${appliedFromDate}-${appliedToDate}`}
+            entering={FadeInDown.duration(220)}
+            style={styles.body}
+          >
+            <GroupSummaryTable
+              rows={groupSummaries}
+              fromDate={appliedFromDate}
+              toDate={appliedToDate}
+              onOpenProfile={(code) =>
+                router.push({
+                  pathname: "/profile",
+                  params: { employeeCode: code },
+                })
+              }
+              loading={loading}
+            />
+          </Animated.View>
+        ) : customApplied ? (
+          <Animated.View
+            key={`range-${appliedFromDate}-${appliedToDate}`}
+            entering={FadeInDown.duration(220)}
+            style={styles.body}
+          >
             <View style={styles.totalCard}>
               <Text style={styles.totalIcon}>▦</Text>
               <View style={styles.totalCopy}>
                 <Text style={styles.totalLabel}>Total Attendance</Text>
-                <Text style={styles.totalValue}>{visibleCounts.present + visibleCounts.late}<Text style={styles.totalSmall}> of {visibleDays} days</Text></Text>
+                <Text style={styles.totalValue}>
+                  {visibleCounts.present + visibleCounts.late}
+                  <Text style={styles.totalSmall}> of {visibleDays} days</Text>
+                </Text>
               </View>
             </View>
             <View style={styles.metrics}>
@@ -321,51 +663,50 @@ export default function AttendanceScreen() {
             <View style={styles.monthSelector}>
               {viewMode === "monthly" ? (
                 <>
-                <Pressable
-                onPress={() =>
-                  setSelectedMonth(
-                    new Date(year, month.getMonth() - 1, 1),
-                  )
-                }
-                disabled={month <= firstAvailableMonth}
-                style={({ pressed }) => [
-                  styles.monthNavButton,
-                  month <= firstAvailableMonth && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-                accessibilityLabel="Previous month"
-              >
-                <Text style={styles.monthArrow}>‹</Text>
-                </Pressable>
-                <Pressable
-                onPress={() => {
-                  setPickerYear(year);
-                  setDatePickerVisible(true);
-                }}
-                style={styles.monthTitleButton}
-                accessibilityRole="button"
-              >
-                <Text style={styles.monthLabel}>
-                  {month.toLocaleDateString("en-US", {
-                    month: "long",
-                    year: "numeric",
-                  })} {"  ⌄"}
-                </Text>
-                </Pressable>
-                <Pressable
-                onPress={() =>
-                  setSelectedMonth(new Date(year, month.getMonth() + 1, 1))
-                }
-                disabled={month >= currentMonth}
-                style={({ pressed }) => [
-                  styles.monthNavButton,
-                  month >= currentMonth && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-                accessibilityLabel="Next month"
-              >
-                <Text style={styles.monthArrow}>›</Text>
-                </Pressable>
+                  <Pressable
+                    onPress={() =>
+                      setSelectedMonth(new Date(year, month.getMonth() - 1, 1))
+                    }
+                    disabled={month <= firstAvailableMonth}
+                    style={({ pressed }) => [
+                      styles.monthNavButton,
+                      month <= firstAvailableMonth && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}
+                    accessibilityLabel="Previous month"
+                  >
+                    <Text style={styles.monthArrow}>‹</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      setPickerYear(year);
+                      setDatePickerVisible(true);
+                    }}
+                    style={styles.monthTitleButton}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.monthLabel}>
+                      {month.toLocaleDateString("en-US", {
+                        month: "long",
+                        year: "numeric",
+                      })}{" "}
+                      {"  ⌄"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() =>
+                      setSelectedMonth(new Date(year, month.getMonth() + 1, 1))
+                    }
+                    disabled={month >= currentMonth}
+                    style={({ pressed }) => [
+                      styles.monthNavButton,
+                      month >= currentMonth && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}
+                    accessibilityLabel="Next month"
+                  >
+                    <Text style={styles.monthArrow}>›</Text>
+                  </Pressable>
                 </>
               ) : null}
             </View>
@@ -390,15 +731,51 @@ export default function AttendanceScreen() {
 
             <Text style={styles.sectionTitle}>Monthly Attendance</Text>
             <View style={styles.summaryCard}>
-              <SummaryRow label="Total Calendar Days" count={visibleDays} tone="neutral" />
-              <SummaryRow label="Total Attendance (Present + Late)" count={visibleCounts.present + visibleCounts.late} tone="present" />
-              <SummaryRow label="Present Days" count={visibleCounts.present} tone="present" />
-              <SummaryRow label="Late Days" count={visibleCounts.late} tone="late" />
-              <SummaryRow label="Absent Days" count={visibleCounts.absent} tone="absent" />
-              <SummaryRow label="Leave Days" count={visibleCounts.leave} tone="leave" />
-              <SummaryRow label="Holiday Days" count={visibleCounts.holiday} tone="holiday" />
-              <SummaryRow label="Weekend Days" count={visibleCounts.weekend} tone="weekend" />
-              <SummaryRow label="Not Recorded Days" count={visibleCounts.notRecorded} tone="unrecorded" />
+              <SummaryRow
+                label="Total Calendar Days"
+                count={visibleDays}
+                tone="neutral"
+              />
+              <SummaryRow
+                label="Total Attendance (Present + Late)"
+                count={visibleCounts.present + visibleCounts.late}
+                tone="present"
+              />
+              <SummaryRow
+                label="Present Days"
+                count={visibleCounts.present}
+                tone="present"
+              />
+              <SummaryRow
+                label="Late Days"
+                count={visibleCounts.late}
+                tone="late"
+              />
+              <SummaryRow
+                label="Absent Days"
+                count={visibleCounts.absent}
+                tone="absent"
+              />
+              <SummaryRow
+                label="Leave Days"
+                count={visibleCounts.leave}
+                tone="leave"
+              />
+              <SummaryRow
+                label="Holiday Days"
+                count={visibleCounts.holiday}
+                tone="holiday"
+              />
+              <SummaryRow
+                label="Weekend Days"
+                count={visibleCounts.weekend}
+                tone="weekend"
+              />
+              <SummaryRow
+                label="Not Recorded Days"
+                count={visibleCounts.notRecorded}
+                tone="unrecorded"
+              />
             </View>
 
             <Text style={styles.sectionTitle}>Monthly Attendance Details</Text>
@@ -409,22 +786,33 @@ export default function AttendanceScreen() {
                 <Text style={styles.headText}>In / Out</Text>
               </View>
               {loading ? (
-                <ActivityIndicator style={styles.loading} color={COLORS.green} />
+                <ActivityIndicator
+                  style={styles.loading}
+                  color={COLORS.green}
+                />
               ) : visibleDetails.length === 0 ? (
                 <Text style={styles.emptyState}>
-                  No dates are available before the employee joined or after today.
+                  No dates are available before the employee joined or after
+                  today.
                 </Text>
               ) : (
                 visibleDetails.map((row, index) => (
                   <Animated.View
                     key={row.attendanceDate}
-                    entering={FadeInDown.delay(Math.min(index * 12, 180)).duration(220)}
+                    entering={FadeInDown.delay(
+                      Math.min(index * 12, 180),
+                    ).duration(220)}
                     style={styles.tableRow}
                   >
                     <Text style={styles.cell}>
-                      {row.weekday}, {Number(row.attendanceDate.slice(-2))} {new Date(`${row.attendanceDate}T00:00:00`).toLocaleDateString("en-US", { month: "short" })}
+                      {row.weekday}, {Number(row.attendanceDate.slice(-2))}{" "}
+                      {new Date(
+                        `${row.attendanceDate}T00:00:00`,
+                      ).toLocaleDateString("en-US", { month: "short" })}
                     </Text>
-                    <Text style={[styles.cell, { color: statusColor(row.status) }]}>
+                    <Text
+                      style={[styles.cell, { color: statusColor(row.status) }]}
+                    >
                       {row.status}
                     </Text>
                     <Text style={styles.cell}>
@@ -466,25 +854,57 @@ export default function AttendanceScreen() {
               <Text style={styles.yearEyebrow}>YEARLY ATTENDANCE</Text>
               <Text style={styles.yearHeading}>{year}</Text>
               {loading ? (
-                <ActivityIndicator style={styles.yearLoading} color={COLORS.green} />
+                <ActivityIndicator
+                  style={styles.yearLoading}
+                  color={COLORS.green}
+                />
               ) : (
                 <>
                   <Text style={styles.yearTotalDays}>
-                    {yearSummary.present + yearSummary.late} <Text style={styles.yearTotalCaption}>attendance days</Text>
+                    {yearSummary.present + yearSummary.late}{" "}
+                    <Text style={styles.yearTotalCaption}>attendance days</Text>
                   </Text>
                   <Text style={styles.yearSubline}>
                     {yearSummary.days} applicable calendar days
                   </Text>
                   <View style={styles.yearCounts}>
-                    <YearCount label="Present" count={yearSummary.present} tone="present" />
-                    <YearCount label="Late" count={yearSummary.late} tone="late" />
-                    <YearCount label="Absent" count={yearSummary.absent} tone="absent" />
-                    <YearCount label="Leave" count={yearSummary.leave} tone="leave" />
+                    <YearCount
+                      label="Present"
+                      count={yearSummary.present}
+                      tone="present"
+                    />
+                    <YearCount
+                      label="Late"
+                      count={yearSummary.late}
+                      tone="late"
+                    />
+                    <YearCount
+                      label="Absent"
+                      count={yearSummary.absent}
+                      tone="absent"
+                    />
+                    <YearCount
+                      label="Leave"
+                      count={yearSummary.leave}
+                      tone="leave"
+                    />
                   </View>
                   <View style={styles.yearCounts}>
-                    <YearCount label="Holiday" count={yearSummary.holiday} tone="holiday" />
-                    <YearCount label="Weekend" count={yearSummary.weekend} tone="weekend" />
-                    <YearCount label="Not Recorded" count={yearSummary.notRecorded} tone="unrecorded" />
+                    <YearCount
+                      label="Holiday"
+                      count={yearSummary.holiday}
+                      tone="holiday"
+                    />
+                    <YearCount
+                      label="Weekend"
+                      count={yearSummary.weekend}
+                      tone="weekend"
+                    />
+                    <YearCount
+                      label="Not Recorded"
+                      count={yearSummary.notRecorded}
+                      tone="unrecorded"
+                    />
                   </View>
                 </>
               )}
@@ -494,10 +914,11 @@ export default function AttendanceScreen() {
             <View style={styles.yearGrid}>
               {monthlySummaries.map(({ monthIndex, days, counts }, index) => {
                 const disabled = days === 0;
-                const monthName = new Date(year, monthIndex, 1).toLocaleDateString(
-                  "en-US",
-                  { month: "long" },
-                );
+                const monthName = new Date(
+                  year,
+                  monthIndex,
+                  1,
+                ).toLocaleDateString("en-US", { month: "long" });
 
                 return (
                   <Animated.View
@@ -521,7 +942,12 @@ export default function AttendanceScreen() {
                       accessibilityLabel={`${monthName} ${year}: ${counts.present + counts.late} attendance days, ${days} applicable calendar days`}
                     >
                       <View style={styles.monthCardTitleRow}>
-                        <Text style={[styles.monthCardTitle, disabled && styles.disabledText]}>
+                        <Text
+                          style={[
+                            styles.monthCardTitle,
+                            disabled && styles.disabledText,
+                          ]}
+                        >
                           {monthName}
                         </Text>
                         <Text style={styles.monthCardArrow}>›</Text>
@@ -530,11 +956,12 @@ export default function AttendanceScreen() {
                         {disabled ? "Not available" : `${days} calendar days`}
                       </Text>
                       <Text style={styles.monthCardPresent}>
-                        {counts.present + counts.late} <Text style={styles.monthCardSmall}>attendance</Text>
+                        {counts.present + counts.late}{" "}
+                        <Text style={styles.monthCardSmall}>attendance</Text>
                       </Text>
                       <StatusBar counts={counts} total={days} />
                       <Text style={styles.monthCardLegend}>
-                        A {counts.absent}  ·  L {counts.late}  ·  Lv {counts.leave}
+                        A {counts.absent} · L {counts.late} · Lv {counts.leave}
                       </Text>
                     </Pressable>
                   </Animated.View>
@@ -627,6 +1054,71 @@ export default function AttendanceScreen() {
         </View>
       </Modal>
       <Modal
+        visible={selectionPicker !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectionPicker(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.pickerCard}>
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>Select {selectionPicker}</Text>
+              <Pressable onPress={() => setSelectionPicker(null)}>
+                <Text style={styles.closePicker}>×</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              value={selectionSearch}
+              onChangeText={setSelectionSearch}
+              placeholder={`Search ${selectionPicker}...`}
+              style={styles.searchInput}
+              autoCapitalize="words"
+            />
+            <ScrollView
+              style={{ maxHeight: 400 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {(selectionPicker === "employee"
+                ? [
+                    { value: "", label: "Blank / All Employees" },
+                    ...employees.map((item) => ({
+                      value: item.employeeCode,
+                      label: `${item.name} (${item.employeeCode})`,
+                    })),
+                  ]
+                : selectionPicker === "designation"
+                  ? [
+                      { value: "", label: "All designations" },
+                      ...[
+                        ...new Set(employees.map((item) => item.designation)),
+                      ].map((value) => ({ value, label: value })),
+                    ]
+                  : [
+                      { value: "", label: "All departments" },
+                      ...[
+                        ...new Set(employees.map((item) => item.department)),
+                      ].map((value) => ({ value, label: value })),
+                    ]
+              )
+                .filter((item) =>
+                  item.label
+                    .toLowerCase()
+                    .includes(selectionSearch.trim().toLowerCase()),
+                )
+                .map((item) => (
+                  <Pressable
+                    key={item.value}
+                    style={styles.selectionOption}
+                    onPress={() => chooseSelection(item.value)}
+                  >
+                    <Text style={styles.selectionOptionText}>{item.label}</Text>
+                  </Pressable>
+                ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal
         visible={calendarVisible}
         transparent
         animationType="fade"
@@ -644,41 +1136,115 @@ export default function AttendanceScreen() {
             </View>
             <View style={styles.calendarHeader}>
               <Pressable
-                onPress={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}
-                disabled={calendarMonth <= firstAvailableMonth}
+                onPress={() =>
+                  setCalendarMonth(
+                    new Date(
+                      calendarMonth.getFullYear(),
+                      calendarMonth.getMonth() - 1,
+                      1,
+                    ),
+                  )
+                }
+                disabled={!isHrAdmin && calendarMonth <= firstAvailableMonth}
                 style={styles.calendarArrow}
-              ><Text style={styles.monthArrow}>‹</Text></Pressable>
+              >
+                <Text style={styles.monthArrow}>‹</Text>
+              </Pressable>
               <Text style={styles.calendarMonthTitle}>
-                {calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                {calendarMonth.toLocaleDateString("en-US", {
+                  month: "long",
+                  year: "numeric",
+                })}
               </Text>
               <Pressable
-                onPress={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}
+                onPress={() =>
+                  setCalendarMonth(
+                    new Date(
+                      calendarMonth.getFullYear(),
+                      calendarMonth.getMonth() + 1,
+                      1,
+                    ),
+                  )
+                }
                 disabled={calendarMonth >= currentMonth}
                 style={styles.calendarArrow}
-              ><Text style={styles.monthArrow}>›</Text></Pressable>
+              >
+                <Text style={styles.monthArrow}>›</Text>
+              </Pressable>
             </View>
             <View style={styles.calendarGrid}>
               {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
-                <Text key={`${day}-${index}`} style={styles.calendarWeekday}>{day}</Text>
+                <Text key={`${day}-${index}`} style={styles.calendarWeekday}>
+                  {day}
+                </Text>
               ))}
-              {Array.from({ length: new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1).getDay() }, (_, index) => (
-                <View key={`blank-${index}`} style={styles.calendarBlank} />
-              ))}
-              {Array.from({ length: new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate() }, (_, index) => {
-                const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), index + 1);
-                const disabled = date < new Date(joiningDate.getFullYear(), joiningDate.getMonth(), joiningDate.getDate()) || date > new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                const selected = formatDate(date) === (calendarTarget === "from" ? fromDate : toDate);
-                return (
-                  <Pressable
-                    key={index}
-                    disabled={disabled}
-                    onPress={() => chooseCalendarDate(date)}
-                    style={[styles.calendarDay, selected && styles.calendarDaySelected, disabled && styles.calendarDayDisabled]}
-                  >
-                    <Text style={[styles.calendarDayText, selected && styles.calendarDayTextSelected, disabled && styles.calendarDayTextDisabled]}>{index + 1}</Text>
-                  </Pressable>
-                );
-              })}
+              {Array.from(
+                {
+                  length: new Date(
+                    calendarMonth.getFullYear(),
+                    calendarMonth.getMonth(),
+                    1,
+                  ).getDay(),
+                },
+                (_, index) => (
+                  <View key={`blank-${index}`} style={styles.calendarBlank} />
+                ),
+              )}
+              {Array.from(
+                {
+                  length: new Date(
+                    calendarMonth.getFullYear(),
+                    calendarMonth.getMonth() + 1,
+                    0,
+                  ).getDate(),
+                },
+                (_, index) => {
+                  const date = new Date(
+                    calendarMonth.getFullYear(),
+                    calendarMonth.getMonth(),
+                    index + 1,
+                  );
+                  const disabled =
+                    (!isHrAdmin &&
+                      date <
+                        new Date(
+                          joiningDate.getFullYear(),
+                          joiningDate.getMonth(),
+                          joiningDate.getDate(),
+                        )) ||
+                    date >
+                      new Date(
+                        now.getFullYear(),
+                        now.getMonth(),
+                        now.getDate(),
+                      );
+                  const selected =
+                    formatDate(date) ===
+                    (calendarTarget === "from" ? fromDate : toDate);
+                  return (
+                    <Pressable
+                      key={index}
+                      disabled={disabled}
+                      onPress={() => chooseCalendarDate(date)}
+                      style={[
+                        styles.calendarDay,
+                        selected && styles.calendarDaySelected,
+                        disabled && styles.calendarDayDisabled,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.calendarDayText,
+                          selected && styles.calendarDayTextSelected,
+                          disabled && styles.calendarDayTextDisabled,
+                        ]}
+                      >
+                        {index + 1}
+                      </Text>
+                    </Pressable>
+                  );
+                },
+              )}
             </View>
           </View>
         </View>
@@ -694,9 +1260,14 @@ function AttendanceTable({
   rows: DailyAttendance[];
   loading: boolean;
 }) {
-  if (loading) return <ActivityIndicator style={styles.loading} color={COLORS.green} />;
+  if (loading)
+    return <ActivityIndicator style={styles.loading} color={COLORS.green} />;
   if (rows.length === 0) {
-    return <Text style={styles.emptyState}>No attendance dates are available for this range.</Text>;
+    return (
+      <Text style={styles.emptyState}>
+        No attendance dates are available for this range.
+      </Text>
+    );
   }
 
   return (
@@ -709,13 +1280,148 @@ function AttendanceTable({
       {rows.map((row) => (
         <View key={row.attendanceDate} style={styles.tableRow}>
           <Text style={styles.cell}>
-            {row.weekday}, {new Date(`${row.attendanceDate}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            {row.weekday},{" "}
+            {new Date(`${row.attendanceDate}T00:00:00`).toLocaleDateString(
+              "en-US",
+              { month: "short", day: "numeric" },
+            )}
           </Text>
-          <Text style={[styles.cell, { color: statusColor(row.status) }]}>{row.status}</Text>
-          <Text style={styles.cell}>{row.checkIn ?? "—"} / {row.checkOut ?? "—"}</Text>
+          <Text style={[styles.cell, { color: statusColor(row.status) }]}>
+            {row.status}
+          </Text>
+          <Text style={styles.cell}>
+            {row.checkIn ?? "—"} / {row.checkOut ?? "—"}
+          </Text>
         </View>
       ))}
     </View>
+  );
+}
+
+function SearchableSelection({
+  label,
+  value,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={styles.selectionField}
+      accessibilityRole="button"
+    >
+      <Text style={styles.rangeCaption}>{label}</Text>
+      <Text style={styles.selectionValue}>{value || "Select"} ▾</Text>
+    </Pressable>
+  );
+}
+
+function GroupSummaryTable({
+  rows,
+  fromDate,
+  toDate,
+  onOpenProfile,
+  loading,
+}: {
+  rows: { employee: Employee; counts: AttendanceCounts; percentage: number }[];
+  fromDate: string;
+  toDate: string;
+  onOpenProfile: (employeeCode: string) => void;
+  loading: boolean;
+}) {
+  if (loading)
+    return <ActivityIndicator style={styles.loading} color={COLORS.green} />;
+  if (!rows.length)
+    return (
+      <Text style={styles.emptyState}>
+        Select an employee or apply a designation or department to see
+        attendance.
+      </Text>
+    );
+  const from = parseDate(fromDate);
+  const to = parseDate(toDate);
+  const month =
+    from &&
+    to &&
+    from.getMonth() === to.getMonth() &&
+    from.getFullYear() === to.getFullYear()
+      ? from.toLocaleDateString("en-US", { month: "long", year: "numeric" })
+      : from && to
+        ? `${from.toLocaleDateString("en-US", { month: "short", year: "numeric" })} – ${to.toLocaleDateString("en-US", { month: "short", year: "numeric" })}`
+        : "—";
+  const dateRange = `${formatDateLabel(fromDate)} – ${formatDateLabel(toDate)}`;
+  const columnWidths = [105, 160, 120, 190, 65, 65, 75, 65, 90];
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator>
+      <View style={styles.groupTable}>
+        <View style={[styles.groupTableRow, styles.groupTableHead]}>
+          {[
+            "Employee ID",
+            "Employee Name",
+            "Month",
+            "Applied Date Range",
+            "Total",
+            "Late",
+            "Present",
+            "Leave",
+            "Attendance",
+          ].map((heading, index) => (
+            <Text
+              key={heading}
+              style={[
+                styles.groupTableCell,
+                styles.groupTableHeadText,
+                { width: columnWidths[index] },
+              ]}
+            >
+              {heading}
+            </Text>
+          ))}
+        </View>
+        {rows.map(({ employee: person, counts, percentage }) => {
+          const total =
+            counts.present + counts.late + counts.absent + counts.leave;
+          const values: (string | number)[] = [
+            person.employeeCode,
+            person.name,
+            month,
+            dateRange,
+            total,
+            counts.late,
+            counts.present,
+            counts.leave,
+            `${percentage}%`,
+          ];
+          return (
+            <View key={person.employeeCode} style={styles.groupTableRow}>
+              {values.map((value, index) => (
+                <View
+                  key={`${person.employeeCode}-${index}`}
+                  style={[
+                    styles.groupTableCell,
+                    { width: columnWidths[index] },
+                  ]}
+                >
+                  {index === 1 ? (
+                    <Pressable
+                      onPress={() => onOpenProfile(person.employeeCode)}
+                      accessibilityRole="link"
+                    >
+                      <Text style={styles.groupName}>{value}</Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.groupCellText}>{value}</Text>
+                  )}
+                </View>
+              ))}
+            </View>
+          );
+        })}
+      </View>
+    </ScrollView>
   );
 }
 
@@ -739,11 +1445,23 @@ function buildDateRangeDetails(
       cursor.getFullYear(),
       cursor.getMonth(),
       joiningDate,
-      rows.filter((row) => row.attendanceDate.startsWith(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`)),
-      holidays.filter((holiday) => holiday.attendanceDate.startsWith(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`)),
+      rows.filter((row) =>
+        row.attendanceDate.startsWith(
+          `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+        ),
+      ),
+      holidays.filter((holiday) =>
+        holiday.attendanceDate.startsWith(
+          `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`,
+        ),
+      ),
       asOfDate,
     );
-    details.push(...monthDetails.filter((row) => row.attendanceDate >= fromDate && row.attendanceDate <= toDate));
+    details.push(
+      ...monthDetails.filter(
+        (row) => row.attendanceDate >= fromDate && row.attendanceDate <= toDate,
+      ),
+    );
     cursor.setMonth(cursor.getMonth() + 1);
   }
   return details;
@@ -753,13 +1471,23 @@ function parseDate(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const [year, month, day] = value.split("-").map(Number);
   const parsed = new Date(year, month - 1, day);
-  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day
+  return parsed.getFullYear() === year &&
+    parsed.getMonth() === month - 1 &&
+    parsed.getDate() === day
     ? parsed
     : null;
 }
 
 function formatDate(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function getCurrentMonthRange() {
+  const today = new Date();
+  return {
+    from: formatDate(new Date(today.getFullYear(), today.getMonth(), 1)),
+    to: formatDate(today),
+  };
 }
 
 function formatDateLabel(value: string) {
@@ -789,7 +1517,12 @@ function ModeButton({
         pressed && styles.pressed,
       ]}
     >
-      <Text style={[styles.modeButtonText, selected && styles.modeButtonTextSelected]}>
+      <Text
+        style={[
+          styles.modeButtonText,
+          selected && styles.modeButtonTextSelected,
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -843,7 +1576,9 @@ function YearSelector({
 function Metric({ label, count }: { label: string; count: number }) {
   return (
     <View style={[styles.metric, { backgroundColor: statusSoftColor(label) }]}>
-      <Text style={[styles.metricCount, { color: statusColor(label) }]}>{count}</Text>
+      <Text style={[styles.metricCount, { color: statusColor(label) }]}>
+        {count}
+      </Text>
       <Text style={styles.metricLabel}>{label}</Text>
     </View>
   );
@@ -1047,14 +1782,126 @@ const styles = StyleSheet.create({
   name: { fontSize: 16, fontWeight: "800", color: "white" },
   detail: { fontSize: 12, color: "#D9E9DF", marginTop: 3 },
   body: { paddingHorizontal: 18, paddingTop: 18 },
-  rangeCard: { marginHorizontal: 18, marginTop: 14, padding: 14, borderRadius: 18, backgroundColor: "white", borderWidth: 1, borderColor: "#DCE7DF" },
-  rangeTitle: { color: "#17352B", fontSize: 14, fontWeight: "800", marginBottom: 10 },
+  rangeCard: {
+    marginHorizontal: 18,
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+  },
+  rangeTitle: {
+    color: "#17352B",
+    fontSize: 14,
+    fontWeight: "800",
+    marginBottom: 10,
+  },
+  selectionField: {
+    minHeight: 52,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  selectionValue: {
+    color: "#17352B",
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: 3,
+  },
+  resetFilters: { alignSelf: "center", paddingVertical: 8 },
+  resetFiltersText: { color: COLORS.green, fontSize: 12, fontWeight: "800" },
+  searchInput: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    color: "#17352B",
+  },
+  selectionOption: {
+    minHeight: 44,
+    justifyContent: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#EFF3F0",
+  },
+  selectionOptionText: { color: "#17352B", fontSize: 14 },
+  groupTable: {
+    minWidth: 935,
+    borderRadius: 14,
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    overflow: "hidden",
+  },
+  groupTableRow: {
+    flexDirection: "row",
+    minHeight: 48,
+    borderTopWidth: 1,
+    borderTopColor: "#EFF3F0",
+  },
+  groupTableHead: { backgroundColor: "#E9F2F8", borderTopWidth: 0 },
+  groupTableCell: {
+    flexShrink: 0,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 9,
+  },
+  groupTableHeadText: { color: "#53655B", fontSize: 10, fontWeight: "800" },
+  groupCellText: { color: "#35483D", fontSize: 10 },
+  groupName: {
+    color: COLORS.green,
+    fontSize: 11,
+    fontWeight: "800",
+    textDecorationLine: "underline",
+  },
+  individualModeSwitch: {
+    flexDirection: "row",
+    alignSelf: "flex-end",
+    marginHorizontal: 18,
+    marginTop: 12,
+    padding: 3,
+    gap: 3,
+    backgroundColor: "#E4EEE8",
+    borderRadius: 16,
+  },
   rangeFields: { flexDirection: "row", gap: 10 },
-  rangeDate: { flex: 1, minHeight: 58, padding: 10, borderRadius: 12, borderWidth: 1, borderColor: "#DCE7DF", justifyContent: "center" },
+  rangeDate: {
+    flex: 1,
+    minHeight: 58,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    justifyContent: "center",
+  },
   rangeDateApplied: { borderColor: "#176B45", backgroundColor: "#F1F8F3" },
   rangeCaption: { color: "#748078", fontSize: 10, fontWeight: "700" },
-  rangeValue: { color: "#17352B", fontSize: 12, fontWeight: "700", marginTop: 4 },
-  applyRange: { marginTop: 10, minHeight: 42, backgroundColor: COLORS.green, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  rangeValue: {
+    color: "#17352B",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 4,
+  },
+  pendingRangeText: {
+    color: "#8A5B00",
+    fontSize: 11,
+    marginTop: 8,
+    textAlign: "center",
+  },
+  applyRange: {
+    marginTop: 10,
+    minHeight: 42,
+    backgroundColor: COLORS.green,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   applyRangeText: { color: "white", fontSize: 13, fontWeight: "800" },
   clearRange: { alignSelf: "center", paddingTop: 9 },
   clearRangeText: { color: COLORS.green, fontSize: 12, fontWeight: "700" },
@@ -1069,7 +1916,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 8,
   },
-  monthNavButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  monthNavButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   monthTitleButton: { flex: 1, alignItems: "center", justifyContent: "center" },
   monthArrow: { fontSize: 25, color: COLORS.green },
   monthLabel: { fontSize: 14, fontWeight: "800", color: "#17352B" },
@@ -1086,7 +1938,12 @@ const styles = StyleSheet.create({
   totalIcon: { fontSize: 38, color: COLORS.green },
   totalCopy: { flex: 1 },
   totalLabel: { fontSize: 13, fontWeight: "700", color: "#355647" },
-  totalValue: { fontSize: 29, fontWeight: "900", color: COLORS.green, marginTop: 1 },
+  totalValue: {
+    fontSize: 29,
+    fontWeight: "900",
+    color: COLORS.green,
+    marginTop: 1,
+  },
   totalSmall: { fontSize: 13, fontWeight: "600", color: "#66776F" },
   metrics: { flexDirection: "row", gap: 8, marginTop: 12 },
   metric: {
@@ -1097,8 +1954,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   metricCount: { fontSize: 20, fontWeight: "900" },
-  metricLabel: { marginTop: 2, color: "#42534A", fontSize: 11, fontWeight: "600" },
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: "#17352B", marginTop: 20, marginBottom: 9 },
+  metricLabel: {
+    marginTop: 2,
+    color: "#42534A",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#17352B",
+    marginTop: 20,
+    marginBottom: 9,
+  },
   summaryCard: {
     borderWidth: 1,
     borderColor: "#DCE7DF",
@@ -1106,70 +1974,206 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     paddingHorizontal: 13,
   },
-  summaryRow: { minHeight: 39, flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "#EFF3F0" },
+  summaryRow: {
+    minHeight: 39,
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#EFF3F0",
+  },
   summaryDot: { width: 9, height: 9, borderRadius: 5, marginRight: 10 },
   summaryLabel: { flex: 1, color: "#42534A", fontSize: 13 },
   summaryValue: { color: "#17352B", fontSize: 14, fontWeight: "800" },
-  table: { borderRadius: 14, backgroundColor: "white", borderWidth: 1, borderColor: "#DCE7DF", overflow: "hidden" },
+  table: {
+    borderRadius: 14,
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    overflow: "hidden",
+  },
   tableHead: { flexDirection: "row", backgroundColor: "#E9F2F8", padding: 11 },
   headText: { flex: 1, fontSize: 11, fontWeight: "800", color: "#53655B" },
-  tableRow: { flexDirection: "row", paddingHorizontal: 11, paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#EFF3F0" },
+  tableRow: {
+    flexDirection: "row",
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#EFF3F0",
+  },
   cell: { flex: 1, fontSize: 11, color: "#35483D" },
   loading: { padding: 22 },
-  emptyState: { padding: 24, textAlign: "center", color: "#66776F", fontSize: 13 },
+  emptyState: {
+    padding: 24,
+    textAlign: "center",
+    color: "#66776F",
+    fontSize: 13,
+  },
   yearSelector: { gap: 8, paddingBottom: 14 },
-  yearSelectorChip: { backgroundColor: "white", borderColor: "#DCE7DF", borderWidth: 1, paddingHorizontal: 15, paddingVertical: 9, borderRadius: 18 },
-  yearTotalCard: { backgroundColor: "#104B35", borderRadius: 22, padding: 20, elevation: 4, shadowColor: "#104B35", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.16, shadowRadius: 12 },
-  yearEyebrow: { color: "#C6DFD0", fontSize: 10, letterSpacing: 1.4, fontWeight: "800" },
-  yearHeading: { color: "white", fontSize: 27, fontWeight: "900", marginTop: 2 },
-  yearTotalDays: { color: "#F4D77F", fontSize: 32, fontWeight: "900", marginTop: 10 },
+  yearSelectorChip: {
+    backgroundColor: "white",
+    borderColor: "#DCE7DF",
+    borderWidth: 1,
+    paddingHorizontal: 15,
+    paddingVertical: 9,
+    borderRadius: 18,
+  },
+  yearTotalCard: {
+    backgroundColor: "#104B35",
+    borderRadius: 22,
+    padding: 20,
+    elevation: 4,
+    shadowColor: "#104B35",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+  },
+  yearEyebrow: {
+    color: "#C6DFD0",
+    fontSize: 10,
+    letterSpacing: 1.4,
+    fontWeight: "800",
+  },
+  yearHeading: {
+    color: "white",
+    fontSize: 27,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  yearTotalDays: {
+    color: "#F4D77F",
+    fontSize: 32,
+    fontWeight: "900",
+    marginTop: 10,
+  },
   yearTotalCaption: { color: "white", fontSize: 14, fontWeight: "600" },
   yearSubline: { color: "#D9E9DF", fontSize: 12, marginTop: 2 },
   yearCounts: { flexDirection: "row", gap: 10, marginTop: 18 },
-  yearCount: { flex: 1, borderRadius: 13, padding: 10, backgroundColor: "rgba(255,255,255,0.1)" },
+  yearCount: {
+    flex: 1,
+    borderRadius: 13,
+    padding: 10,
+    backgroundColor: "rgba(255,255,255,0.1)",
+  },
   yearCountValue: { fontSize: 18, fontWeight: "900" },
   yearCountLabel: { fontSize: 10, color: "#E5EEE8", marginTop: 3 },
   yearLoading: { padding: 20 },
   yearGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   monthCardWrapper: { width: "48%" },
-  monthCard: { minHeight: 148, borderRadius: 17, backgroundColor: "white", borderWidth: 1, borderColor: "#DCE7DF", padding: 12, elevation: 2, shadowColor: "#123528", shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.06, shadowRadius: 8 },
+  monthCard: {
+    minHeight: 148,
+    borderRadius: 17,
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    padding: 12,
+    elevation: 2,
+    shadowColor: "#123528",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+  },
   monthCardDisabled: { opacity: 0.55, backgroundColor: "#F7F9F7" },
-  monthCardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  monthCardTitleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
   monthCardTitle: { color: "#17352B", fontSize: 14, fontWeight: "800" },
   monthCardArrow: { color: COLORS.green, fontSize: 19, fontWeight: "700" },
   monthCardDays: { color: "#748078", fontSize: 10, marginTop: 4 },
-  monthCardPresent: { color: COLORS.green, fontSize: 22, fontWeight: "900", marginTop: 7 },
+  monthCardPresent: {
+    color: COLORS.green,
+    fontSize: 22,
+    fontWeight: "900",
+    marginTop: 7,
+  },
   monthCardSmall: { color: "#66776F", fontSize: 11, fontWeight: "600" },
-  statusTrack: { height: 7, borderRadius: 4, overflow: "hidden", flexDirection: "row", backgroundColor: COLORS.track, marginTop: 8 },
+  statusTrack: {
+    height: 7,
+    borderRadius: 4,
+    overflow: "hidden",
+    flexDirection: "row",
+    backgroundColor: COLORS.track,
+    marginTop: 8,
+  },
   statusSegment: { height: 7 },
   monthCardLegend: { fontSize: 9, color: "#66776F", marginTop: 7 },
   disabledText: { color: "#9BA69F" },
   cardPressed: { opacity: 0.82, transform: [{ scale: 0.98 }] },
   pressed: { opacity: 0.75 },
-  modalBackdrop: { flex: 1, padding: 24, justifyContent: "center", backgroundColor: "rgba(15,23,42,0.48)" },
-  pickerCard: { padding: 18, borderRadius: 20, backgroundColor: "white", elevation: 12 },
-  pickerHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  modalBackdrop: {
+    flex: 1,
+    padding: 24,
+    justifyContent: "center",
+    backgroundColor: "rgba(15,23,42,0.48)",
+  },
+  pickerCard: {
+    padding: 18,
+    borderRadius: 20,
+    backgroundColor: "white",
+    elevation: 12,
+  },
+  pickerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
   pickerTitle: { color: "#17352B", fontSize: 17, fontWeight: "800" },
   closePicker: { fontSize: 26, color: "#64748B", paddingHorizontal: 6 },
   years: { gap: 8, paddingBottom: 16 },
-  yearChip: { paddingHorizontal: 15, paddingVertical: 9, borderRadius: 18, backgroundColor: "#F1F5F9" },
+  yearChip: {
+    paddingHorizontal: 15,
+    paddingVertical: 9,
+    borderRadius: 18,
+    backgroundColor: "#F1F5F9",
+  },
   yearChipSelected: { backgroundColor: COLORS.green },
   yearText: { color: "#334155", fontWeight: "600" },
   yearTextSelected: { color: "white" },
   monthGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  monthOption: { width: "30%", paddingVertical: 13, alignItems: "center", borderRadius: 11, backgroundColor: "#EFF6F2" },
+  monthOption: {
+    width: "30%",
+    paddingVertical: 13,
+    alignItems: "center",
+    borderRadius: 11,
+    backgroundColor: "#EFF6F2",
+  },
   monthOptionSelected: { backgroundColor: "#D7F2E4" },
   monthOptionDisabled: { backgroundColor: "#F8FAFC" },
   monthOptionText: { color: "#1E3A2F", fontWeight: "600" },
   monthOptionTextSelected: { color: COLORS.green, fontWeight: "800" },
   monthOptionTextDisabled: { color: "#CBD5E1" },
-  calendarHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
-  calendarArrow: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  calendarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  calendarArrow: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   calendarMonthTitle: { color: "#17352B", fontSize: 15, fontWeight: "800" },
   calendarGrid: { flexDirection: "row", flexWrap: "wrap" },
-  calendarWeekday: { width: "14.285%", textAlign: "center", paddingVertical: 8, color: "#748078", fontSize: 12, fontWeight: "700" },
+  calendarWeekday: {
+    width: "14.285%",
+    textAlign: "center",
+    paddingVertical: 8,
+    color: "#748078",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   calendarBlank: { width: "14.285%", height: 42 },
-  calendarDay: { width: "14.285%", height: 42, alignItems: "center", justifyContent: "center", borderRadius: 21 },
+  calendarDay: {
+    width: "14.285%",
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 21,
+  },
   calendarDaySelected: { backgroundColor: COLORS.green },
   calendarDayDisabled: { opacity: 0.35 },
   calendarDayText: { color: "#17352B", fontSize: 13, fontWeight: "600" },

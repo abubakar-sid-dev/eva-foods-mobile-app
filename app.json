@@ -22,7 +22,7 @@
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"
       ],
-      "package": "com.abubakar.sid.MyMobileApp"
+      "package": "com.abubakar.sid.mymobileapp"
     },
     "web": {
       "output": "server",
