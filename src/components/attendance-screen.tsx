@@ -935,7 +935,7 @@ export default function AttendanceScreen({
                     </View>
                   </View>
                 )}
-                <Text style={styles.sectionTitle}>Monthly Attendance</Text>
+                <Text style={styles.sectionTitle}>Attendance by Month</Text>
                 {loading ? (
                   <ActivityIndicator
                     style={styles.loading}
@@ -1025,56 +1025,7 @@ export default function AttendanceScreen({
               <Metric label="Leave" count={visibleCounts.leave} />
             </View>
 
-            <Text style={styles.sectionTitle}>Monthly Attendance</Text>
-            <View style={styles.summaryCard}>
-              <SummaryRow
-                label="Total Calendar Days"
-                count={visibleDays}
-                tone="neutral"
-              />
-              <SummaryRow
-                label="Total Attendance (Present + Late)"
-                count={visibleCounts.present + visibleCounts.late}
-                tone="present"
-              />
-              <SummaryRow
-                label="Present Days"
-                count={visibleCounts.present}
-                tone="present"
-              />
-              <SummaryRow
-                label="Late Days"
-                count={visibleCounts.late}
-                tone="late"
-              />
-              <SummaryRow
-                label="Absent Days"
-                count={visibleCounts.absent}
-                tone="absent"
-              />
-              <SummaryRow
-                label="Leave Days"
-                count={visibleCounts.leave}
-                tone="leave"
-              />
-              <SummaryRow
-                label="Holiday Days"
-                count={visibleCounts.holiday}
-                tone="holiday"
-              />
-              <SummaryRow
-                label="Weekend Days"
-                count={visibleCounts.weekend}
-                tone="weekend"
-              />
-              <SummaryRow
-                label="Not Recorded Days"
-                count={visibleCounts.notRecorded}
-                tone="unrecorded"
-              />
-            </View>
-
-            <Text style={styles.sectionTitle}>Monthly Attendance Details</Text>
+            <Text style={styles.sectionTitle}>Attendance Details</Text>
             <View style={styles.table}>
               <View style={styles.tableHead}>
                 <Text style={styles.headText}>Date</Text>
@@ -1220,7 +1171,7 @@ export default function AttendanceScreen({
               )}
             </View>
 
-            <Text style={styles.sectionTitle}>Monthly Breakdown</Text>
+            <Text style={styles.sectionTitle}>Yearly Breakdown</Text>
             <View style={styles.yearGrid}>
               {yearViewMonths.map(({ monthIndex, days, counts }, index) => {
                 const disabled = days === 0;
