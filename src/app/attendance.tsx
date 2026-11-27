@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,7 +19,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { CustomDateRangePicker } from "@/components/custom-date-range-picker";
 import { attendanceService } from "@/services/attendance-service";
+import type { AttendanceSummary } from "@/services/attendance-service";
 import type { Attendance, Employee } from "@/types/hrms";
 import {
   buildDailyAttendanceDetails,
@@ -49,7 +51,6 @@ export default function AttendanceScreen() {
   const [pickerYear, setPickerYear] = useState(month.getFullYear());
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget>("from");
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [fromDate, setFromDate] = useState(() => getCurrentMonthRange().from);
   const [toDate, setToDate] = useState(() => getCurrentMonthRange().to);
   const [appliedFromDate, setAppliedFromDate] = useState(
@@ -63,6 +64,10 @@ export default function AttendanceScreen() {
   const [rangeHolidays, setRangeHolidays] = useState<CompanyHoliday[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allRows, setAllRows] = useState<Attendance[]>([]);
+  const [groupAttendanceSummaries, setGroupAttendanceSummaries] = useState<
+    AttendanceSummary[]
+  >([]);
+  const [loadingFilteredRows, setLoadingFilteredRows] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(
     employee,
   );
@@ -124,25 +129,11 @@ export default function AttendanceScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      initialRangePending.current = true;
-      const defaultRange = getCurrentMonthRange();
-      setFromDate(defaultRange.from);
-      setToDate(defaultRange.to);
-      setAppliedFromDate(defaultRange.from);
-      setAppliedToDate(defaultRange.to);
-      setCustomApplied(true);
-      setManualGroupFilters(false);
       if (employee && (employee.role === "HR" || employee.role === "Admin")) {
-        setSelectedEmployee(employee);
-        setSelectedDesignation(employee.designation);
-        setSelectedDepartment(employee.department);
-        void Promise.all([
-          attendanceService.loadEmployees(),
-          attendanceService.loadAllAttendance(),
-        ])
-          .then(([availableEmployees, attendance]) => {
+        void attendanceService
+          .loadEmployees()
+          .then((availableEmployees) => {
             setEmployees(availableEmployees);
-            setAllRows(attendance);
           })
           .catch(() =>
             Alert.alert(
@@ -150,17 +141,30 @@ export default function AttendanceScreen() {
               "Please reopen the Attendance screen.",
             ),
           );
+      } else {
+        initialRangePending.current = true;
+        const defaultRange = getCurrentMonthRange();
+        setFromDate(defaultRange.from);
+        setToDate(defaultRange.to);
+        setAppliedFromDate(defaultRange.from);
+        setAppliedToDate(defaultRange.to);
+        setCustomApplied(true);
+        setManualGroupFilters(false);
       }
     }, [employee]),
   );
 
+  useEffect(() => {
+    if (isHrAdmin) void loadYear();
+  }, [isHrAdmin, loadYear]);
+
   useFocusEffect(
     useCallback(() => {
-      void loadYear();
-    }, [loadYear]),
+      if (!isHrAdmin) void loadYear();
+    }, [isHrAdmin, loadYear]),
   );
 
-  const now = new Date();
+  const [now] = useState(() => new Date());
   const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const joiningDate = useMemo(
     () =>
@@ -186,13 +190,24 @@ export default function AttendanceScreen() {
     [month, yearRows],
   );
 
-  const dailyDetails = buildDailyAttendanceDetails(
-    year,
-    month.getMonth(),
-    attendanceEmployee?.joiningDate ?? formatDate(now),
-    monthRows,
-    holidays,
-    now,
+  const dailyDetails = useMemo(
+    () =>
+      buildDailyAttendanceDetails(
+        year,
+        month.getMonth(),
+        attendanceEmployee?.joiningDate ?? formatDate(now),
+        monthRows,
+        holidays,
+        now,
+      ),
+    [
+      year,
+      month,
+      attendanceEmployee?.joiningDate,
+      monthRows,
+      holidays,
+      now,
+    ],
   );
   const rangeDetails = useMemo(
     () =>
@@ -226,10 +241,10 @@ export default function AttendanceScreen() {
 
   const groupEmployees = useMemo(() => {
     if (!isHrAdmin || !employee) return [];
-    if (!selectedDesignation && !selectedDepartment)
-      return selectedEmployee ? [selectedEmployee] : [];
     return employees.filter(
       (candidate) =>
+        (!selectedEmployee ||
+          candidate.employeeCode === selectedEmployee.employeeCode) &&
         (!selectedDesignation ||
           candidate.designation === selectedDesignation) &&
         (!selectedDepartment || candidate.department === selectedDepartment),
@@ -242,98 +257,154 @@ export default function AttendanceScreen() {
     selectedDesignation,
     selectedDepartment,
   ]);
-  const groupDetails = useMemo(() => {
-    if (!isHrAdmin || !employee) return [];
-    return groupEmployees.flatMap((candidate) => {
-      const rows = allRows.filter(
-        (row) =>
-          row.employeeCode === candidate.employeeCode &&
-          row.attendanceDate >= appliedFromDate &&
-          row.attendanceDate <= appliedToDate,
-      );
-      return buildDateRangeDetails(
-        appliedFromDate,
-        appliedToDate,
-        candidate.joiningDate,
-        rows,
-        rangeHolidays,
-        now,
-      ).map((detail) => ({
-        ...detail,
-        employeeName: candidate.name,
-        employeeCode: candidate.employeeCode,
-      }));
-    });
-  }, [
-    isHrAdmin,
-    employee,
-    groupEmployees,
-    allRows,
-    appliedFromDate,
-    appliedToDate,
-    rangeHolidays,
-    now,
-  ]);
-  const groupSummaries = useMemo(
-    () =>
-      groupEmployees.map((candidate) => {
-        const details = groupDetails.filter(
-          (detail) => detail.employeeCode === candidate.employeeCode,
-        );
-        const counts = getAttendanceCounts(details);
-        const accountedDays =
-          counts.present + counts.late + counts.absent + counts.leave;
-        return {
-          employee: candidate,
-          counts,
-          percentage: accountedDays
-            ? Math.round(((counts.present + counts.late) / accountedDays) * 100)
-            : 0,
-        };
-      }),
-    [groupEmployees, groupDetails],
+  const groupEmployeeCodes = useMemo(
+    () => groupEmployees.map((candidate) => candidate.employeeCode),
+    [groupEmployees],
   );
+  const groupEmployeeKey = groupEmployeeCodes.join(",");
   const groupViewActive =
     isHrAdmin && !!employee && (manualGroupFilters || !selectedEmployee);
 
-  const monthlySummaries = employee
-    ? MONTHS.map((monthIndex) => {
-        const details = buildDailyAttendanceDetails(
-          year,
-          monthIndex,
-          (attendanceEmployee ?? employee).joiningDate,
-          yearRows,
-          holidays,
-          now,
-        );
-        return {
-          monthIndex,
-          days: details.length,
-          counts: getAttendanceCounts(details),
-        };
+  useEffect(() => {
+    let active = true;
+    setAllRows([]);
+    setGroupAttendanceSummaries([]);
+    if (!isHrAdmin || !employee || !groupEmployeeCodes.length) {
+      setLoadingFilteredRows(false);
+      return () => {
+        active = false;
+      };
+    }
+    if (!groupViewActive && !customApplied) {
+      setLoadingFilteredRows(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setLoadingFilteredRows(true);
+    const attendanceLoad = groupViewActive
+      ? attendanceService
+          .loadAttendanceSummaryForEmployees(
+            groupEmployeeCodes,
+            appliedFromDate,
+            appliedToDate,
+          )
+          .then((summaries) => {
+            if (active) setGroupAttendanceSummaries(summaries);
+          })
+      : attendanceService
+          .loadAttendanceForEmployees(
+            groupEmployeeCodes,
+            appliedFromDate,
+            appliedToDate,
+          )
+          .then((rows) => {
+            if (active) setAllRows(rows);
+          });
+    void attendanceLoad
+      .catch(() => {
+        if (active) {
+          Alert.alert(
+            "Unable to load attendance",
+            "Please try applying the filters again.",
+          );
+        }
       })
-    : [];
-  const yearSummary = monthlySummaries.reduce(
-    (summary, monthSummary) => ({
-      days: summary.days + monthSummary.days,
-      present: summary.present + monthSummary.counts.present,
-      absent: summary.absent + monthSummary.counts.absent,
-      late: summary.late + monthSummary.counts.late,
-      leave: summary.leave + monthSummary.counts.leave,
-      holiday: summary.holiday + monthSummary.counts.holiday,
-      weekend: summary.weekend + monthSummary.counts.weekend,
-      notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
-    }),
-    {
-      days: 0,
-      present: 0,
-      absent: 0,
-      late: 0,
-      leave: 0,
-      holiday: 0,
-      weekend: 0,
-      notRecorded: 0,
-    },
+      .finally(() => {
+        if (active) setLoadingFilteredRows(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    isHrAdmin,
+    employee,
+    groupEmployeeKey,
+    groupEmployeeCodes,
+    groupViewActive,
+    customApplied,
+    appliedFromDate,
+    appliedToDate,
+  ]);
+  const groupSummaries = useMemo(() => {
+    const summariesByEmployee = new Map(
+      groupAttendanceSummaries.map((summary) => [
+        summary.employeeCode,
+        summary,
+      ]),
+    );
+
+    return groupEmployees.map((candidate) => {
+      const summary = summariesByEmployee.get(candidate.employeeCode);
+      const counts: AttendanceCounts = {
+        present: summary?.present ?? 0,
+        late: summary?.late ?? 0,
+        absent: summary?.absent ?? 0,
+        leave: summary?.leave ?? 0,
+        holiday: 0,
+        weekend: 0,
+        notRecorded: 0,
+      };
+      const accountedDays =
+        counts.present + counts.late + counts.absent + counts.leave;
+      return {
+        employee: candidate,
+        counts,
+        percentage: accountedDays
+          ? Math.round(((counts.present + counts.late) / accountedDays) * 100)
+          : 0,
+      };
+    });
+  }, [groupEmployees, groupAttendanceSummaries]);
+
+  const monthlySummaries = useMemo(
+    () =>
+      employee
+        ? MONTHS.map((monthIndex) => {
+            const details = buildDailyAttendanceDetails(
+              year,
+              monthIndex,
+              (attendanceEmployee ?? employee).joiningDate,
+              yearRows,
+              holidays,
+              now,
+            );
+            return {
+              monthIndex,
+              days: details.length,
+              counts: getAttendanceCounts(details),
+            };
+          })
+        : [],
+    [employee, attendanceEmployee?.joiningDate, year, yearRows, holidays, now],
+  );
+  const yearSummary = useMemo(
+    () =>
+      monthlySummaries.reduce(
+        (summary, monthSummary) => ({
+          days: summary.days + monthSummary.days,
+          present: summary.present + monthSummary.counts.present,
+          absent: summary.absent + monthSummary.counts.absent,
+          late: summary.late + monthSummary.counts.late,
+          leave: summary.leave + monthSummary.counts.leave,
+          holiday: summary.holiday + monthSummary.counts.holiday,
+          weekend: summary.weekend + monthSummary.counts.weekend,
+          notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
+        }),
+        {
+          days: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          leave: 0,
+          holiday: 0,
+          weekend: 0,
+          notRecorded: 0,
+        },
+      ),
+    [monthlySummaries],
   );
 
   if (!employee) return null;
@@ -347,9 +418,6 @@ export default function AttendanceScreen() {
 
   const showCalendar = (target: CalendarTarget) => {
     setCalendarTarget(target);
-    const selected =
-      parseDate(target === "from" ? fromDate : toDate) ?? new Date();
-    setCalendarMonth(new Date(selected.getFullYear(), selected.getMonth(), 1));
     setCalendarVisible(true);
   };
 
@@ -399,23 +467,12 @@ export default function AttendanceScreen() {
         { length: to.getFullYear() - from.getFullYear() + 1 },
         (_, index) => from.getFullYear() + index,
       );
-      const results = await Promise.all(
-        years.map(async (rangeYear) => {
-          const [rows, yearHolidays] = await Promise.all([
-            attendanceService.loadEmployeeYear(
-              (attendanceEmployee ?? employee).employeeCode,
-              rangeYear,
-            ),
-            attendanceService.getCompanyHolidays(rangeYear),
-          ]);
-          return { rows, yearHolidays };
-        }),
+      const yearHolidays = await Promise.all(
+        years.map((rangeYear) =>
+          attendanceService.getCompanyHolidays(rangeYear),
+        ),
       );
-      setRangeRows(results.flatMap((result) => result.rows));
-      setRangeHolidays(results.flatMap((result) => result.yearHolidays));
-      if (isHrAdmin) {
-        setAllRows(await attendanceService.loadAllAttendance());
-      }
+      setRangeHolidays(yearHolidays.flat());
       setAppliedFromDate(fromDate);
       setAppliedToDate(toDate);
       setCustomApplied(true);
@@ -626,7 +683,7 @@ export default function AttendanceScreen() {
                   params: { employeeCode: code },
                 })
               }
-              loading={loading}
+              loading={loading || loadingFilteredRows}
             />
           </Animated.View>
         ) : customApplied ? (
@@ -652,7 +709,10 @@ export default function AttendanceScreen() {
               <Metric label="Leave" count={visibleCounts.leave} />
             </View>
             <Text style={styles.sectionTitle}>Attendance Details</Text>
-            <AttendanceTable rows={visibleDetails} loading={loading} />
+            <AttendanceTable
+              rows={visibleDetails}
+              loading={loading || loadingFilteredRows}
+            />
           </Animated.View>
         ) : viewMode !== "yearly" ? (
           <Animated.View
@@ -1118,137 +1178,15 @@ export default function AttendanceScreen() {
           </View>
         </View>
       </Modal>
-      <Modal
+      <CustomDateRangePicker
         visible={calendarVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCalendarVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.pickerCard}>
-            <View style={styles.pickerHeader}>
-              <Text style={styles.pickerTitle}>
-                {`Select ${calendarTarget === "from" ? "From" : "To"} Date`}
-              </Text>
-              <Pressable onPress={() => setCalendarVisible(false)}>
-                <Text style={styles.closePicker}>×</Text>
-              </Pressable>
-            </View>
-            <View style={styles.calendarHeader}>
-              <Pressable
-                onPress={() =>
-                  setCalendarMonth(
-                    new Date(
-                      calendarMonth.getFullYear(),
-                      calendarMonth.getMonth() - 1,
-                      1,
-                    ),
-                  )
-                }
-                disabled={!isHrAdmin && calendarMonth <= firstAvailableMonth}
-                style={styles.calendarArrow}
-              >
-                <Text style={styles.monthArrow}>‹</Text>
-              </Pressable>
-              <Text style={styles.calendarMonthTitle}>
-                {calendarMonth.toLocaleDateString("en-US", {
-                  month: "long",
-                  year: "numeric",
-                })}
-              </Text>
-              <Pressable
-                onPress={() =>
-                  setCalendarMonth(
-                    new Date(
-                      calendarMonth.getFullYear(),
-                      calendarMonth.getMonth() + 1,
-                      1,
-                    ),
-                  )
-                }
-                disabled={calendarMonth >= currentMonth}
-                style={styles.calendarArrow}
-              >
-                <Text style={styles.monthArrow}>›</Text>
-              </Pressable>
-            </View>
-            <View style={styles.calendarGrid}>
-              {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
-                <Text key={`${day}-${index}`} style={styles.calendarWeekday}>
-                  {day}
-                </Text>
-              ))}
-              {Array.from(
-                {
-                  length: new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth(),
-                    1,
-                  ).getDay(),
-                },
-                (_, index) => (
-                  <View key={`blank-${index}`} style={styles.calendarBlank} />
-                ),
-              )}
-              {Array.from(
-                {
-                  length: new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth() + 1,
-                    0,
-                  ).getDate(),
-                },
-                (_, index) => {
-                  const date = new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth(),
-                    index + 1,
-                  );
-                  const disabled =
-                    (!isHrAdmin &&
-                      date <
-                        new Date(
-                          joiningDate.getFullYear(),
-                          joiningDate.getMonth(),
-                          joiningDate.getDate(),
-                        )) ||
-                    date >
-                      new Date(
-                        now.getFullYear(),
-                        now.getMonth(),
-                        now.getDate(),
-                      );
-                  const selected =
-                    formatDate(date) ===
-                    (calendarTarget === "from" ? fromDate : toDate);
-                  return (
-                    <Pressable
-                      key={index}
-                      disabled={disabled}
-                      onPress={() => chooseCalendarDate(date)}
-                      style={[
-                        styles.calendarDay,
-                        selected && styles.calendarDaySelected,
-                        disabled && styles.calendarDayDisabled,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.calendarDayText,
-                          selected && styles.calendarDayTextSelected,
-                          disabled && styles.calendarDayTextDisabled,
-                        ]}
-                      >
-                        {index + 1}
-                      </Text>
-                    </Pressable>
-                  );
-                },
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
+        target={calendarTarget}
+        selectedDate={calendarTarget === "from" ? fromDate : toDate}
+        minimumDate={attendanceEmployee?.joiningDate ?? formatDate(now)}
+        maximumDate={formatDate(now)}
+        onClose={() => setCalendarVisible(false)}
+        onSelect={chooseCalendarDate}
+      />
     </SafeAreaView>
   );
 }
@@ -1337,8 +1275,7 @@ function GroupSummaryTable({
   if (!rows.length)
     return (
       <Text style={styles.emptyState}>
-        Select an employee or apply a designation or department to see
-        attendance.
+        No matching employees found.
       </Text>
     );
   const from = parseDate(fromDate);

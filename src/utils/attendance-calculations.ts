@@ -26,6 +26,15 @@ export type AttendanceCounts = {
   notRecorded: number;
 };
 
+export type RangeMonthSummary = {
+  monthKey: string;
+  label: string;
+  calendarDays: number;
+  counts: AttendanceCounts;
+  workingDays: number;
+  percentage: number;
+};
+
 export function getAttendanceCounts(
   rows: Array<Pick<DailyAttendance, "status">>,
 ): AttendanceCounts {
@@ -38,6 +47,59 @@ export function getAttendanceCounts(
     weekend: rows.filter((row) => row.status === "Weekend").length,
     notRecorded: rows.filter((row) => row.status === "Not Recorded").length,
   };
+}
+
+export function summarizeAttendanceByMonth(
+  rows: DailyAttendance[],
+  fromDate: string,
+  toDate: string,
+): RangeMonthSummary[] {
+  const from = parseLocalDate(fromDate);
+  const to = parseLocalDate(toDate);
+  if (
+    !Number.isFinite(from.getTime()) ||
+    !Number.isFinite(to.getTime()) ||
+    formatLocalDate(from) !== fromDate ||
+    formatLocalDate(to) !== toDate ||
+    from > to
+  ) {
+    return [];
+  }
+
+  const rowsByMonth = new Map<string, DailyAttendance[]>();
+  for (const row of rows) {
+    if (row.attendanceDate < fromDate || row.attendanceDate > toDate) continue;
+    const monthKey = row.attendanceDate.slice(0, 7);
+    const monthRows = rowsByMonth.get(monthKey) ?? [];
+    monthRows.push(row);
+    rowsByMonth.set(monthKey, monthRows);
+  }
+
+  const summaries: RangeMonthSummary[] = [];
+  const cursor = new Date(from.getFullYear(), from.getMonth(), 1);
+  const lastMonth = new Date(to.getFullYear(), to.getMonth(), 1);
+  while (cursor <= lastMonth) {
+    const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
+    const counts = getAttendanceCounts(rowsByMonth.get(monthKey) ?? []);
+    const workingDays =
+      counts.present + counts.late + counts.absent + counts.leave;
+    summaries.push({
+      monthKey,
+      label: cursor.toLocaleDateString("en-US", {
+        month: "long",
+        year: "numeric",
+      }),
+      calendarDays: rowsByMonth.get(monthKey)?.length ?? 0,
+      counts,
+      workingDays,
+      percentage: workingDays
+        ? Math.round(((counts.present + counts.late) / workingDays) * 100)
+        : 0,
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return summaries;
 }
 
 /**
@@ -101,6 +163,48 @@ export function buildDailyAttendanceDetails(
   }
 
   return result;
+}
+
+export function buildMonthRangeAttendanceDetails(
+  year: number,
+  month: number,
+  joiningDate: string,
+  attendanceRows: Attendance[],
+  holidays: CompanyHoliday[],
+  rangeFrom: string,
+  rangeTo: string,
+  asOfDate: Date = new Date(),
+) {
+  const from = parseLocalDate(rangeFrom);
+  const to = parseLocalDate(rangeTo);
+  if (
+    formatLocalDate(from) !== rangeFrom ||
+    formatLocalDate(to) !== rangeTo ||
+    from > to
+  ) {
+    return [];
+  }
+
+  const monthStart = formatLocalDate(new Date(year, month, 1));
+  const monthEnd = formatLocalDate(new Date(year, month + 1, 0));
+  const clippedFrom = rangeFrom > monthStart ? rangeFrom : monthStart;
+  const clippedTo = rangeTo < monthEnd ? rangeTo : monthEnd;
+  if (clippedFrom > clippedTo) return [];
+
+  return buildDailyAttendanceDetails(
+    year,
+    month,
+    joiningDate,
+    attendanceRows.filter(
+      (row) =>
+        row.attendanceDate >= clippedFrom && row.attendanceDate <= clippedTo,
+    ),
+    holidays,
+    asOfDate,
+  ).filter(
+    (row) =>
+      row.attendanceDate >= clippedFrom && row.attendanceDate <= clippedTo,
+  );
 }
 
 export function getApplicableCalendarDays(

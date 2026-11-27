@@ -204,69 +204,164 @@ export async function seedEmployees() {
   });
 }
 
-let attendanceSeedPromise: Promise<void> | null = null;
+let attendanceSeedQueue: Promise<void> = Promise.resolve();
+let allAttendanceSeeded: boolean | null = null;
+const seededAttendanceScopes = new Set<string>();
 
-export function seedAttendance() {
-  if (!attendanceSeedPromise) {
-    attendanceSeedPromise = seedAttendanceInternal().catch((error) => {
-      attendanceSeedPromise = null;
-      throw error;
-    });
-  }
-
-  return attendanceSeedPromise;
+export function seedAttendance(
+  employeeCodes: string[],
+  fromDate: string,
+  toDate: string,
+) {
+  const request = attendanceSeedQueue.then(() =>
+    seedAttendanceInternal(employeeCodes, fromDate, toDate),
+  );
+  attendanceSeedQueue = request.catch(() => undefined);
+  return request;
 }
 
-async function seedAttendanceInternal() {
+async function seedAttendanceInternal(
+  employeeCodes: string[],
+  fromDate: string,
+  toDate: string,
+) {
+  const uniqueCodes = [...new Set(employeeCodes)];
+  if (!uniqueCodes.length) return;
+  const firstYear = Number(fromDate.slice(0, 4));
+  const lastYear = Number(toDate.slice(0, 4));
+  if (!Number.isInteger(firstYear) || !Number.isInteger(lastYear) || firstYear > lastYear) {
+    return;
+  }
+  const requestedScopes = uniqueCodes.flatMap((employeeCode) =>
+    Array.from({ length: lastYear - firstYear + 1 }, (_, index) => ({
+      employeeCode,
+      year: firstYear + index,
+      key: `${employeeCode}:${firstYear + index}`,
+    })),
+  );
+
   const db = await getDatabase();
-  const seeded = await db.getFirstAsync<{ value: string }>(
-    "SELECT value FROM AppMetadata WHERE key = ?",
-    "attendance_history_v1",
-  );
-  if (seeded?.value === "complete") return;
+  if (allAttendanceSeeded === null) {
+    const seeded = await db.getFirstAsync<{ value: string }>(
+      "SELECT value FROM AppMetadata WHERE key = ?",
+      "attendance_history_v1",
+    );
+    allAttendanceSeeded = seeded?.value === "complete";
+  }
+  if (allAttendanceSeeded) {
+    requestedScopes.forEach(({ key }) => seededAttendanceScopes.add(key));
+    return;
+  }
 
-  const employees = await db.getAllAsync<Pick<Employee, "employeeCode" | "joiningDate">>(
-    "SELECT employeeCode, joiningDate FROM Employees",
+  let missingScopes = requestedScopes.filter(
+    ({ key }) => !seededAttendanceScopes.has(key),
   );
-  const today = new Date();
-  const todayString = formatDate(today);
+  const uncheckedScopes = [...missingScopes];
+  const metadataChunkSize = 900;
+  const completedScopes = new Set<string>();
+  for (let offset = 0; offset < uncheckedScopes.length; offset += metadataChunkSize) {
+    const chunk = uncheckedScopes.slice(offset, offset + metadataChunkSize);
+    const keys = chunk.map(
+      ({ employeeCode, year }) =>
+        `attendance_history_v1:${employeeCode}:${year}`,
+    );
+    const placeholders = keys.map(() => "?").join(", ");
+    const completed = await db.getAllAsync<{ key: string }>(
+      `SELECT key FROM AppMetadata WHERE key IN (${placeholders})`,
+      ...keys,
+    );
+    completed.forEach(({ key }) => {
+      completedScopes.add(key.slice("attendance_history_v1:".length));
+    });
+  }
+  completedScopes.forEach((scope) => seededAttendanceScopes.add(scope));
+  missingScopes = missingScopes.filter(
+    ({ employeeCode, year }) =>
+      !completedScopes.has(`${employeeCode}:${year}`),
+  );
+  if (!missingScopes.length) return;
 
+  const missingCodes = [...new Set(missingScopes.map(({ employeeCode }) => employeeCode))];
+  const employees = new Map<string, Pick<Employee, "employeeCode" | "joiningDate">>();
+  for (let offset = 0; offset < missingCodes.length; offset += metadataChunkSize) {
+    const codes = missingCodes.slice(offset, offset + metadataChunkSize);
+    const placeholders = codes.map(() => "?").join(", ");
+    const rows = await db.getAllAsync<
+      Pick<Employee, "employeeCode" | "joiningDate">
+    >(
+        `SELECT employeeCode, joiningDate FROM Employees
+         WHERE employeeCode IN (${placeholders})`,
+        ...codes,
+      );
+    rows.forEach((row) => employees.set(row.employeeCode, row));
+  }
+
+  const todayString = formatDate(new Date());
+  const scopesToSeed = missingScopes.filter(({ employeeCode }) =>
+    employees.has(employeeCode),
+  );
   await db.withTransactionAsync(async () => {
-    for (const employee of employees) {
+    let batch: (string | number | null)[] = [];
+
+    const insertBatch = async () => {
+      if (batch.length === 0) return;
+      const rowCount = batch.length / 7;
+      const placeholders = Array.from(
+        { length: rowCount },
+        () => "(?, ?, ?, ?, ?, ?, ?)",
+      ).join(", ");
+      await db.runAsync(
+        `INSERT OR IGNORE INTO Attendance
+          (employeeCode, attendanceDate, checkIn, checkOut, status, workingHours, lateMinutes)
+         VALUES ${placeholders}`,
+        batch,
+      );
+      batch = [];
+    };
+
+    for (const scope of scopesToSeed) {
+      const employee = employees.get(scope.employeeCode);
+      if (!employee) continue;
       const startDate = new Date(`${employee.joiningDate}T00:00:00`);
-      const date = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
-      let batch: (string | number | null)[] = [];
+      const yearStart = new Date(scope.year, 0, 1);
+      const start = startDate > yearStart ? startDate : yearStart;
+      const yearEnd = new Date(scope.year, 11, 31);
+      const today = new Date(`${todayString}T00:00:00`);
+      const end = yearEnd < today ? yearEnd : today;
+      const date = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate(),
+      );
 
-      const insertBatch = async () => {
-        if (batch.length === 0) return;
-        const rowCount = batch.length / 7;
-        const placeholders = Array.from(
-          { length: rowCount },
-          () => "(?, ?, ?, ?, ?, ?, ?)",
-        ).join(", ");
-        await db.runAsync(
-          `INSERT OR IGNORE INTO Attendance
-            (employeeCode, attendanceDate, checkIn, checkOut, status, workingHours, lateMinutes)
-           VALUES ${placeholders}`,
-          batch,
-        );
-        batch = [];
-      };
-
-      while (formatDate(date) <= todayString) {
+      while (formatDate(date) <= formatDate(end)) {
         const weekday = date.getDay();
         if (weekday !== 0 && weekday !== 6) {
           const dateKey = formatDate(date);
           const daySeed = Math.floor(date.getTime() / 86400000);
           const employeeSeed = Number(employee.employeeCode.slice(-4));
           const seed = (employeeSeed * 17 + daySeed * 13) % 100;
-          const status = seed < 5 ? "Leave" : seed < 13 ? "Absent" : seed < 23 ? "Late" : "Present";
+          const status =
+            seed < 5
+              ? "Leave"
+              : seed < 13
+                ? "Absent"
+                : seed < 23
+                  ? "Late"
+                  : "Present";
           const lateMinutes = status === "Late" ? 10 + (seed % 6) * 5 : 0;
-          const checkIn = status === "Present" || status === "Late"
-            ? status === "Late" ? `09:${String((seed * 3) % 60).padStart(2, "0")}` : `08:${String((seed * 3) % 60).padStart(2, "0")}`
+          const checkIn =
+            status === "Present" || status === "Late"
+              ? status === "Late"
+                ? `09:${String((seed * 3) % 60).padStart(2, "0")}`
+                : `08:${String((seed * 3) % 60).padStart(2, "0")}`
+              : null;
+          const checkOut = checkIn
+            ? `17:${String((seed * 7) % 60).padStart(2, "0")}`
             : null;
-          const checkOut = checkIn ? `17:${String((seed * 7) % 60).padStart(2, "0")}` : null;
-          const workingHours = checkIn ? Math.round((8 - lateMinutes / 60) * 10) / 10 : 0;
+          const workingHours = checkIn
+            ? Math.round((8 - lateMinutes / 60) * 10) / 10
+            : 0;
 
           batch.push(
             employee.employeeCode,
@@ -277,19 +372,31 @@ async function seedAttendanceInternal() {
             workingHours,
             lateMinutes,
           );
-          if (batch.length >= 700) await insertBatch();
+          if (batch.length >= 980) await insertBatch();
         }
 
         date.setDate(date.getDate() + 1);
       }
-      await insertBatch();
     }
-    await db.runAsync(
-      "INSERT OR REPLACE INTO AppMetadata (key, value) VALUES (?, ?)",
-      "attendance_history_v1",
-      "complete",
-    );
+    await insertBatch();
+
+    for (let offset = 0; offset < scopesToSeed.length; offset += 400) {
+      const scopeChunk = scopesToSeed.slice(offset, offset + 400);
+      const metadataPlaceholders = scopeChunk
+        .map(() => "(?, ?)")
+        .join(", ");
+      const metadataParams = scopeChunk.flatMap(({ employeeCode, year }) => [
+        `attendance_history_v1:${employeeCode}:${year}`,
+        "complete",
+      ]);
+      await db.runAsync(
+        `INSERT OR REPLACE INTO AppMetadata (key, value) VALUES ${metadataPlaceholders}`,
+        metadataParams,
+      );
+    }
   });
+
+  scopesToSeed.forEach(({ key }) => seededAttendanceScopes.add(key));
 }
 
 function formatDate(date: Date) {
@@ -363,10 +470,73 @@ export async function getCompanyHolidaysForYear(year: number) {
   );
 }
 
-export async function getAllAttendance() {
-  return (await getDatabase()).getAllAsync<Attendance>(
-    "SELECT * FROM Attendance ORDER BY attendanceDate, employeeCode",
-  );
+export async function getAttendanceForEmployees(
+  employeeCodes: string[],
+  fromDate: string,
+  toDate: string,
+) {
+  const db = await getDatabase();
+  const rows: Attendance[] = [];
+  const chunkSize = 900;
+
+  for (let offset = 0; offset < employeeCodes.length; offset += chunkSize) {
+    const codes = employeeCodes.slice(offset, offset + chunkSize);
+    const placeholders = codes.map(() => "?").join(", ");
+    rows.push(
+      ...(await db.getAllAsync<Attendance>(
+        `SELECT * FROM Attendance
+         WHERE employeeCode IN (${placeholders})
+           AND attendanceDate >= ?
+           AND attendanceDate <= ?
+         ORDER BY employeeCode, attendanceDate`,
+        ...codes,
+        fromDate,
+        toDate,
+      )),
+    );
+  }
+
+  return rows;
+}
+
+export async function getAttendanceSummaryForEmployees(
+  employeeCodes: string[],
+  fromDate: string,
+  toDate: string,
+) {
+  const db = await getDatabase();
+  const summaries: {
+    employeeCode: string;
+    present: number;
+    late: number;
+    absent: number;
+    leave: number;
+  }[] = [];
+  const chunkSize = 900;
+
+  for (let offset = 0; offset < employeeCodes.length; offset += chunkSize) {
+    const codes = employeeCodes.slice(offset, offset + chunkSize);
+    const placeholders = codes.map(() => "?").join(", ");
+    summaries.push(
+      ...(await db.getAllAsync<(typeof summaries)[number]>(
+        `SELECT employeeCode,
+           SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) AS present,
+           SUM(CASE WHEN status = 'Late' THEN 1 ELSE 0 END) AS late,
+           SUM(CASE WHEN status = 'Absent' THEN 1 ELSE 0 END) AS absent,
+           SUM(CASE WHEN status = 'Leave' THEN 1 ELSE 0 END) AS leave
+         FROM Attendance
+         WHERE employeeCode IN (${placeholders})
+           AND attendanceDate >= ?
+           AND attendanceDate <= ?
+         GROUP BY employeeCode`,
+        ...codes,
+        fromDate,
+        toDate,
+      )),
+    );
+  }
+
+  return summaries;
 }
 export async function authenticate(username: string, password: string) {
   const employee = await getEmployeeByUsername(username);

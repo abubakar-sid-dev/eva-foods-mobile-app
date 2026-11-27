@@ -7,6 +7,11 @@
     "icon": "./assets/images/icon.png",
     "scheme": "mymobileapp",
     "userInterfaceStyle": "automatic",
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_ERROR_RECOVERY",
+      "useEmbeddedUpdate": true
+    },
     "ios": {
       "icon": "./assets/expo.icon"
     },

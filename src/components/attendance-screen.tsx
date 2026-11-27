@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import type { ReactNode } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -22,17 +22,19 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSession } from "@/auth/session";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { CustomDateRangePicker } from "@/components/custom-date-range-picker";
 import { attendanceService } from "@/services/attendance-service";
 import type { Attendance, Employee } from "@/types/hrms";
 import {
   buildDailyAttendanceDetails,
   getAttendanceCounts,
+  summarizeAttendanceByMonth,
   type AttendanceCounts,
   type CompanyHoliday,
   type DailyAttendance,
 } from "@/utils/attendance-calculations";
 
-type ViewMode = "monthly" | "yearly";
+type ViewMode = "monthly" | "yearly" | "summary";
 type CalendarTarget = "from" | "to";
 type ScreenContainerProps = {
   children?: ReactNode;
@@ -82,6 +84,9 @@ export default function AttendanceScreen({
   });
   const [year, setYear] = useState(month.getFullYear());
   const [viewMode, setViewMode] = useState<ViewMode>("monthly");
+  const [summaryBasis, setSummaryBasis] = useState<"monthly" | "yearly">(
+    "monthly",
+  );
   const [yearRows, setYearRows] = useState<Attendance[]>([]);
   const [holidays, setHolidays] = useState<CompanyHoliday[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,7 +94,6 @@ export default function AttendanceScreen({
   const [pickerYear, setPickerYear] = useState(month.getFullYear());
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarTarget, setCalendarTarget] = useState<CalendarTarget>("from");
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [fromDate, setFromDate] = useState(() => getCurrentMonthRange().from);
   const [toDate, setToDate] = useState(() => getCurrentMonthRange().to);
   const [appliedFromDate, setAppliedFromDate] = useState(
@@ -98,7 +102,8 @@ export default function AttendanceScreen({
   const [appliedToDate, setAppliedToDate] = useState(
     () => getCurrentMonthRange().to,
   );
-  const [customApplied, setCustomApplied] = useState(true);
+  const [selectedRangeYear, setSelectedRangeYear] = useState<number | null>(null);
+  const [customApplied, setCustomApplied] = useState(!embedded);
   const [rangeRows, setRangeRows] = useState<Attendance[]>([]);
   const [rangeHolidays, setRangeHolidays] = useState<CompanyHoliday[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -159,7 +164,7 @@ export default function AttendanceScreen({
         setAppliedToDate(defaultRange.to);
         setRangeRows(attendance);
         setRangeHolidays(companyHolidays);
-        setCustomApplied(true);
+        setCustomApplied(!embedded);
         initialRangePending.current = false;
       }
     } finally {
@@ -169,29 +174,15 @@ export default function AttendanceScreen({
 
   useFocusEffect(
     useCallback(() => {
-      initialRangePending.current = true;
-      const defaultRange = getCurrentMonthRange();
-      setFromDate(defaultRange.from);
-      setToDate(defaultRange.to);
-      setAppliedFromDate(defaultRange.from);
-      setAppliedToDate(defaultRange.to);
-      setCustomApplied(true);
-      setManualGroupFilters(false);
       if (
         !employeeOverride &&
         employee &&
         (employee.role === "HR" || employee.role === "Admin")
       ) {
-        setSelectedEmployee(employee);
-        setSelectedDesignation(employee.designation);
-        setSelectedDepartment(employee.department);
-        void Promise.all([
-          attendanceService.loadEmployees(),
-          attendanceService.loadAllAttendance(),
-        ])
-          .then(([availableEmployees, attendance]) => {
+        void attendanceService
+          .loadEmployees()
+          .then((availableEmployees) => {
             setEmployees(availableEmployees);
-            setAllRows(attendance);
           })
           .catch(() =>
             Alert.alert(
@@ -200,16 +191,14 @@ export default function AttendanceScreen({
             ),
           );
       }
-    }, [employee, employeeOverride]),
+  }, [employee, employeeOverride, embedded]),
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      void loadYear();
-    }, [loadYear]),
-  );
+  useEffect(() => {
+    void loadYear();
+  }, [loadYear]);
 
-  const now = new Date();
+  const [now] = useState(() => new Date());
   const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const joiningDate = useMemo(
     () =>
@@ -235,13 +224,24 @@ export default function AttendanceScreen({
     [month, yearRows],
   );
 
-  const dailyDetails = buildDailyAttendanceDetails(
-    year,
-    month.getMonth(),
-    attendanceEmployee?.joiningDate ?? formatDate(now),
-    monthRows,
-    holidays,
-    now,
+  const dailyDetails = useMemo(
+    () =>
+      buildDailyAttendanceDetails(
+        year,
+        month.getMonth(),
+        attendanceEmployee?.joiningDate ?? formatDate(now),
+        monthRows,
+        holidays,
+        now,
+      ),
+    [
+      year,
+      month,
+      attendanceEmployee?.joiningDate,
+      monthRows,
+      holidays,
+      now,
+    ],
   );
   const rangeDetails = useMemo(
     () =>
@@ -272,6 +272,47 @@ export default function AttendanceScreen({
   const visibleDetails = customApplied ? rangeDetails : dailyDetails;
   const visibleCounts = getAttendanceCounts(visibleDetails);
   const visibleDays = visibleDetails.length;
+  const rangeMonthCards = useMemo(
+    () =>
+      summarizeAttendanceByMonth(
+        visibleDetails,
+        appliedFromDate,
+        appliedToDate,
+      ),
+    [appliedFromDate, appliedToDate, visibleDetails],
+  );
+  const rangeYears = useMemo(
+    () =>
+      [
+        ...new Set(
+          rangeMonthCards.map((card) => Number(card.monthKey.slice(0, 4))),
+        ),
+      ].sort((left, right) => left - right),
+    [rangeMonthCards],
+  );
+  const rangeDisplayDetails = useMemo(
+    () =>
+      selectedRangeYear === null
+        ? visibleDetails
+        : visibleDetails.filter((row) =>
+            row.attendanceDate.startsWith(`${selectedRangeYear}-`),
+          ),
+    [selectedRangeYear, visibleDetails],
+  );
+  const rangeDisplayCounts = useMemo(
+    () => getAttendanceCounts(rangeDisplayDetails),
+    [rangeDisplayDetails],
+  );
+  const rangeDisplayDays = rangeDisplayDetails.length;
+  const rangeDisplayMonthCards = useMemo(
+    () =>
+      selectedRangeYear === null
+        ? rangeMonthCards
+        : rangeMonthCards.filter((card) =>
+            card.monthKey.startsWith(`${selectedRangeYear}-`),
+          ),
+    [rangeMonthCards, selectedRangeYear],
+  );
 
   const groupEmployees = useMemo(() => {
     if (!isHrAdmin || !employee) return [];
@@ -345,45 +386,109 @@ export default function AttendanceScreen({
   const groupViewActive =
     isHrAdmin && !!employee && (manualGroupFilters || !selectedEmployee);
 
-  const monthlySummaries = employee
-    ? MONTHS.map((monthIndex) => {
-        const details = buildDailyAttendanceDetails(
-          year,
-          monthIndex,
-          (attendanceEmployee ?? employee).joiningDate,
-          yearRows,
-          holidays,
-          now,
-        );
-        return {
-          monthIndex,
-          days: details.length,
-          counts: getAttendanceCounts(details),
-        };
-      })
-    : [];
-  const yearSummary = monthlySummaries.reduce(
-    (summary, monthSummary) => ({
-      days: summary.days + monthSummary.days,
-      present: summary.present + monthSummary.counts.present,
-      absent: summary.absent + monthSummary.counts.absent,
-      late: summary.late + monthSummary.counts.late,
-      leave: summary.leave + monthSummary.counts.leave,
-      holiday: summary.holiday + monthSummary.counts.holiday,
-      weekend: summary.weekend + monthSummary.counts.weekend,
-      notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
-    }),
-    {
-      days: 0,
-      present: 0,
-      absent: 0,
-      late: 0,
-      leave: 0,
-      holiday: 0,
-      weekend: 0,
-      notRecorded: 0,
-    },
+  const monthlySummaries = useMemo(
+    () =>
+      employee
+        ? MONTHS.map((monthIndex) => {
+            const details = buildDailyAttendanceDetails(
+              year,
+              monthIndex,
+              (attendanceEmployee ?? employee).joiningDate,
+              yearRows,
+              holidays,
+              now,
+            );
+            return {
+              monthIndex,
+              days: details.length,
+              counts: getAttendanceCounts(details),
+            };
+          })
+        : [],
+    [employee, attendanceEmployee?.joiningDate, year, yearRows, holidays, now],
   );
+  const yearViewMonths = useMemo(
+    () =>
+      embedded && customApplied
+        ? rangeMonthCards
+            .filter((card) => card.monthKey.startsWith(`${year}-`))
+            .map((card) => ({
+              monthIndex: Number(card.monthKey.slice(5, 7)) - 1,
+              days: card.calendarDays,
+              counts: card.counts,
+            }))
+        : monthlySummaries,
+    [embedded, customApplied, rangeMonthCards, year, monthlySummaries],
+  );
+  const yearViewSummary = useMemo(
+    () =>
+      yearViewMonths.reduce(
+        (summary, monthSummary) => ({
+          days: summary.days + monthSummary.days,
+          present: summary.present + monthSummary.counts.present,
+          absent: summary.absent + monthSummary.counts.absent,
+          late: summary.late + monthSummary.counts.late,
+          leave: summary.leave + monthSummary.counts.leave,
+          holiday: summary.holiday + monthSummary.counts.holiday,
+          weekend: summary.weekend + monthSummary.counts.weekend,
+          notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
+        }),
+        {
+          days: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          leave: 0,
+          holiday: 0,
+          weekend: 0,
+          notRecorded: 0,
+        },
+      ),
+    [yearViewMonths],
+  );
+  const yearSummary = useMemo(
+    () =>
+      monthlySummaries.reduce(
+        (summary, monthSummary) => ({
+          days: summary.days + monthSummary.days,
+          present: summary.present + monthSummary.counts.present,
+          absent: summary.absent + monthSummary.counts.absent,
+          late: summary.late + monthSummary.counts.late,
+          leave: summary.leave + monthSummary.counts.leave,
+          holiday: summary.holiday + monthSummary.counts.holiday,
+          weekend: summary.weekend + monthSummary.counts.weekend,
+          notRecorded: summary.notRecorded + monthSummary.counts.notRecorded,
+        }),
+        {
+          days: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          leave: 0,
+          holiday: 0,
+          weekend: 0,
+          notRecorded: 0,
+        },
+      ),
+    [monthlySummaries],
+  );
+  const summaryCounts =
+    !customApplied && summaryBasis === "yearly" ? yearSummary : visibleCounts;
+  const summaryWorkingDays =
+    summaryCounts.present +
+    summaryCounts.late +
+    summaryCounts.absent +
+    summaryCounts.leave;
+  const summaryAttendancePercentage = summaryWorkingDays
+    ? Math.round(
+        ((summaryCounts.present + summaryCounts.late) / summaryWorkingDays) *
+          100,
+      )
+    : 0;
+  const customFrom = embedded && customApplied ? parseDate(appliedFromDate) : null;
+  const customTo = embedded && customApplied ? parseDate(appliedToDate) : null;
+  const yearSelectorMinimum = customFrom?.getFullYear() ?? minimumYear;
+  const yearSelectorMaximum = customTo?.getFullYear() ?? maximumYear;
 
   if (!employee) return null;
   const profileEmployee = isHrAdmin ? (selectedEmployee ?? employee) : employee;
@@ -396,9 +501,6 @@ export default function AttendanceScreen({
 
   const showCalendar = (target: CalendarTarget) => {
     setCalendarTarget(target);
-    const selected =
-      parseDate(target === "from" ? fromDate : toDate) ?? new Date();
-    setCalendarMonth(new Date(selected.getFullYear(), selected.getMonth(), 1));
     setCalendarVisible(true);
   };
 
@@ -448,26 +550,29 @@ export default function AttendanceScreen({
         { length: to.getFullYear() - from.getFullYear() + 1 },
         (_, index) => from.getFullYear() + index,
       );
-      const results = await Promise.all(
-        years.map(async (rangeYear) => {
-          const [rows, yearHolidays] = await Promise.all([
-            attendanceService.loadEmployeeYear(
-              (attendanceEmployee ?? employee).employeeCode,
-              rangeYear,
-            ),
+      const [attendance, yearHolidays] = await Promise.all([
+        attendanceService.loadAttendanceForEmployees(
+          isHrAdmin
+            ? groupEmployees.map((candidate) => candidate.employeeCode)
+            : [(attendanceEmployee ?? employee).employeeCode],
+          fromDate,
+          toDate,
+        ),
+        Promise.all(
+          years.map((rangeYear) =>
             attendanceService.getCompanyHolidays(rangeYear),
-          ]);
-          return { rows, yearHolidays };
-        }),
-      );
-      setRangeRows(results.flatMap((result) => result.rows));
-      setRangeHolidays(results.flatMap((result) => result.yearHolidays));
-      if (isHrAdmin) {
-        setAllRows(await attendanceService.loadAllAttendance());
-      }
+          ),
+        ),
+      ]);
+      setRangeRows(attendance);
+      setRangeHolidays(yearHolidays.flat());
+      if (isHrAdmin) setAllRows(attendance);
       setAppliedFromDate(fromDate);
       setAppliedToDate(toDate);
+      setSelectedRangeYear(null);
       setCustomApplied(true);
+      setYear(to.getFullYear());
+      setMonth(new Date(to.getFullYear(), to.getMonth(), 1));
     } catch {
       Alert.alert(
         "Unable to load attendance",
@@ -479,7 +584,12 @@ export default function AttendanceScreen({
   };
 
   const changeMode = (nextMode: ViewMode) => {
-    setCustomApplied(false);
+    if (nextMode === "summary") {
+      setSummaryBasis(viewMode === "yearly" ? "yearly" : "monthly");
+    } else {
+      setSummaryBasis(nextMode);
+    }
+    if (!embedded) setCustomApplied(false);
     setViewMode(nextMode);
   };
 
@@ -653,7 +763,7 @@ export default function AttendanceScreen({
             )}
         </View>
 
-        {(embedded || (isHrAdmin && !groupViewActive)) && (
+        {!embedded && isHrAdmin && !groupViewActive && (
           <View style={styles.individualModeSwitch}>
             <ModeButton
               label="Month"
@@ -687,7 +797,42 @@ export default function AttendanceScreen({
               loading={loading}
             />
           </Animated.View>
-        ) : customApplied ? (
+        ) : embedded && viewMode === "summary" ? (
+          <Animated.View
+            key={`summary-${customApplied ? `${appliedFromDate}-${appliedToDate}` : summaryBasis === "yearly" ? year : `${year}-${month.getMonth()}`}`}
+            entering={FadeInDown.duration(220)}
+            style={styles.body}
+          >
+            <Text style={styles.sectionTitle}>Summary Attendance</Text>
+            <View style={styles.totalCard}>
+              <Text style={styles.totalIcon}>▦</Text>
+              <View style={styles.totalCopy}>
+                <Text style={styles.totalLabel}>Total Working Days</Text>
+                <Text style={styles.totalValue}>{summaryWorkingDays}</Text>
+              </View>
+            </View>
+            <View style={styles.metrics}>
+              <Metric label="Present" count={summaryCounts.present} />
+              <Metric label="Late" count={summaryCounts.late} />
+              <Metric label="Absent" count={summaryCounts.absent} />
+              <Metric label="Leave" count={summaryCounts.leave} />
+            </View>
+            <View style={styles.summaryCard}>
+              <View style={styles.summaryRow}>
+                <View
+                  style={[
+                    styles.summaryDot,
+                    { backgroundColor: toneColor("present") },
+                  ]}
+                />
+                <Text style={styles.summaryLabel}>Attendance Percentage</Text>
+                <Text style={styles.summaryValue}>
+                  {summaryAttendancePercentage}%
+                </Text>
+              </View>
+            </View>
+          </Animated.View>
+        ) : customApplied && !(embedded && viewMode === "yearly") ? (
           <Animated.View
             key={`range-${appliedFromDate}-${appliedToDate}`}
             entering={FadeInDown.duration(220)}
@@ -698,19 +843,151 @@ export default function AttendanceScreen({
               <View style={styles.totalCopy}>
                 <Text style={styles.totalLabel}>Total Attendance</Text>
                 <Text style={styles.totalValue}>
-                  {visibleCounts.present + visibleCounts.late}
-                  <Text style={styles.totalSmall}> of {visibleDays} days</Text>
+                  {rangeDisplayCounts.present + rangeDisplayCounts.late}
+                  <Text style={styles.totalSmall}>
+                    {" "}of {rangeDisplayDays} days
+                  </Text>
                 </Text>
               </View>
             </View>
-            <View style={styles.metrics}>
-              <Metric label="Present" count={visibleCounts.present} />
-              <Metric label="Late" count={visibleCounts.late} />
-              <Metric label="Absent" count={visibleCounts.absent} />
-              <Metric label="Leave" count={visibleCounts.leave} />
+            <View
+              style={[styles.metrics, embedded && styles.rangeMetricsWrap]}
+            >
+              <Metric
+                label="Present"
+                count={rangeDisplayCounts.present}
+                compact={embedded}
+              />
+              <Metric
+                label="Late"
+                count={rangeDisplayCounts.late}
+                compact={embedded}
+              />
+              <Metric
+                label="Absent"
+                count={rangeDisplayCounts.absent}
+                compact={embedded}
+              />
+              <Metric
+                label="Leave"
+                count={rangeDisplayCounts.leave}
+                compact={embedded}
+              />
+              {embedded && (
+                <Metric
+                  label="Weekend"
+                  count={rangeDisplayCounts.weekend}
+                  compact
+                />
+              )}
             </View>
-            <Text style={styles.sectionTitle}>Attendance Details</Text>
-            <AttendanceTable rows={visibleDetails} loading={loading} />
+            {embedded ? (
+              <>
+                {rangeYears.length > 0 && (
+                  <View style={styles.rangeYearSection}>
+                    <Text style={styles.sectionTitle}>Filter by Year</Text>
+                    <View style={styles.rangeYearButtons}>
+                      {rangeYears.map((rangeYear) => (
+                        <Pressable
+                          key={rangeYear}
+                          onPress={() =>
+                            setSelectedRangeYear((current) =>
+                              current === rangeYear ? null : rangeYear,
+                            )
+                          }
+                          style={[
+                            styles.rangeYearButton,
+                            selectedRangeYear === rangeYear &&
+                              styles.rangeYearButtonSelected,
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            selected: selectedRangeYear === rangeYear,
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.rangeYearButtonText,
+                              selectedRangeYear === rangeYear &&
+                                styles.rangeYearButtonTextSelected,
+                            ]}
+                          >
+                            {rangeYear}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                )}
+                <Text style={styles.sectionTitle}>Monthly Attendance</Text>
+                {loading ? (
+                  <ActivityIndicator
+                    style={styles.loading}
+                    color={COLORS.green}
+                  />
+                ) : (
+                  <View style={styles.rangeMonthGrid}>
+                    {rangeDisplayMonthCards.map((card) => (
+                      <Pressable
+                        key={card.monthKey}
+                        style={({ pressed }) => [
+                          styles.rangeMonthCard,
+                          pressed && styles.cardPressed,
+                        ]}
+                        onPress={() =>
+                          router.push(
+                            {
+                              pathname: "/attendance-month",
+                              params: {
+                                employeeCode:
+                                  (attendanceEmployee ?? employee)
+                                    .employeeCode,
+                                month: card.monthKey,
+                                fromDate: appliedFromDate,
+                                toDate: appliedToDate,
+                              },
+                            } as never,
+                          )
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel={`${card.label}: ${card.workingDays} working days, ${card.counts.present} present, ${card.counts.late} late, ${card.counts.absent} absent, ${card.counts.leave} leave, ${card.percentage}% attendance`}
+                      >
+                        <Text style={styles.rangeMonthTitle}>{card.label}</Text>
+                        <RangeMonthStat
+                          label="Total Working Days"
+                          value={card.workingDays}
+                        />
+                        <RangeMonthStat
+                          label="Present"
+                          value={card.counts.present}
+                        />
+                        <RangeMonthStat
+                          label="Late"
+                          value={card.counts.late}
+                        />
+                        <RangeMonthStat
+                          label="Absent"
+                          value={card.counts.absent}
+                        />
+                        <RangeMonthStat
+                          label="Leave"
+                          value={card.counts.leave}
+                        />
+                        <RangeMonthStat
+                          label="Attendance"
+                          value={`${card.percentage}%`}
+                        />
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
+            ) : (
+              <>
+                <Text style={styles.sectionTitle}>Attendance Details</Text>
+                <AttendanceTable rows={visibleDetails} loading={loading} />
+              </>
+            )}
           </Animated.View>
         ) : viewMode !== "yearly" ? (
           <Animated.View
@@ -890,16 +1167,34 @@ export default function AttendanceScreen({
           >
             <YearSelector
               year={year}
-              minimumYear={minimumYear}
-              maximumYear={maximumYear}
+              minimumYear={
+                embedded && customApplied
+                  ? yearSelectorMinimum
+                  : minimumYear
+              }
+              maximumYear={
+                embedded && customApplied
+                  ? yearSelectorMaximum
+                  : maximumYear
+              }
               onSelect={(selectedYear) => {
                 setYear(selectedYear);
                 const latestMonth =
-                  selectedYear === now.getFullYear() ? now.getMonth() : 11;
+                  embedded && customApplied && customTo
+                    ? selectedYear === customTo.getFullYear()
+                      ? customTo.getMonth()
+                      : 11
+                    : selectedYear === now.getFullYear()
+                      ? now.getMonth()
+                      : 11;
                 const earliestMonth =
-                  selectedYear === firstAvailableMonth.getFullYear()
-                    ? firstAvailableMonth.getMonth()
-                    : 0;
+                  embedded && customApplied && customFrom
+                    ? selectedYear === customFrom.getFullYear()
+                      ? customFrom.getMonth()
+                      : 0
+                    : selectedYear === firstAvailableMonth.getFullYear()
+                      ? firstAvailableMonth.getMonth()
+                      : 0;
                 const selectedMonth = Math.max(
                   earliestMonth,
                   Math.min(month.getMonth(), latestMonth),
@@ -919,48 +1214,48 @@ export default function AttendanceScreen({
               ) : (
                 <>
                   <Text style={styles.yearTotalDays}>
-                    {yearSummary.present + yearSummary.late}{" "}
+                    {yearViewSummary.present + yearViewSummary.late}{" "}
                     <Text style={styles.yearTotalCaption}>attendance days</Text>
                   </Text>
                   <Text style={styles.yearSubline}>
-                    {yearSummary.days} applicable calendar days
+                    {yearViewSummary.days} applicable calendar days
                   </Text>
                   <View style={styles.yearCounts}>
                     <YearCount
                       label="Present"
-                      count={yearSummary.present}
+                      count={yearViewSummary.present}
                       tone="present"
                     />
                     <YearCount
                       label="Late"
-                      count={yearSummary.late}
+                      count={yearViewSummary.late}
                       tone="late"
                     />
                     <YearCount
                       label="Absent"
-                      count={yearSummary.absent}
+                      count={yearViewSummary.absent}
                       tone="absent"
                     />
                     <YearCount
                       label="Leave"
-                      count={yearSummary.leave}
+                      count={yearViewSummary.leave}
                       tone="leave"
                     />
                   </View>
                   <View style={styles.yearCounts}>
                     <YearCount
                       label="Holiday"
-                      count={yearSummary.holiday}
+                      count={yearViewSummary.holiday}
                       tone="holiday"
                     />
                     <YearCount
                       label="Weekend"
-                      count={yearSummary.weekend}
+                      count={yearViewSummary.weekend}
                       tone="weekend"
                     />
                     <YearCount
                       label="Not Recorded"
-                      count={yearSummary.notRecorded}
+                      count={yearViewSummary.notRecorded}
                       tone="unrecorded"
                     />
                   </View>
@@ -970,7 +1265,7 @@ export default function AttendanceScreen({
 
             <Text style={styles.sectionTitle}>Monthly Breakdown</Text>
             <View style={styles.yearGrid}>
-              {monthlySummaries.map(({ monthIndex, days, counts }, index) => {
+              {yearViewMonths.map(({ monthIndex, days, counts }, index) => {
                 const disabled = days === 0;
                 const monthName = new Date(
                   year,
@@ -1176,142 +1471,35 @@ export default function AttendanceScreen({
           </View>
         </View>
       </Modal>
-      <Modal
+      <CustomDateRangePicker
         visible={calendarVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCalendarVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.pickerCard}>
-            <View style={styles.pickerHeader}>
-              <Text style={styles.pickerTitle}>
-                {`Select ${calendarTarget === "from" ? "From" : "To"} Date`}
-              </Text>
-              <Pressable onPress={() => setCalendarVisible(false)}>
-                <Text style={styles.closePicker}>×</Text>
-              </Pressable>
-            </View>
-            <View style={styles.calendarHeader}>
-              <Pressable
-                onPress={() =>
-                  setCalendarMonth(
-                    new Date(
-                      calendarMonth.getFullYear(),
-                      calendarMonth.getMonth() - 1,
-                      1,
-                    ),
-                  )
-                }
-                disabled={!isHrAdmin && calendarMonth <= firstAvailableMonth}
-                style={styles.calendarArrow}
-              >
-                <Text style={styles.monthArrow}>‹</Text>
-              </Pressable>
-              <Text style={styles.calendarMonthTitle}>
-                {calendarMonth.toLocaleDateString("en-US", {
-                  month: "long",
-                  year: "numeric",
-                })}
-              </Text>
-              <Pressable
-                onPress={() =>
-                  setCalendarMonth(
-                    new Date(
-                      calendarMonth.getFullYear(),
-                      calendarMonth.getMonth() + 1,
-                      1,
-                    ),
-                  )
-                }
-                disabled={calendarMonth >= currentMonth}
-                style={styles.calendarArrow}
-              >
-                <Text style={styles.monthArrow}>›</Text>
-              </Pressable>
-            </View>
-            <View style={styles.calendarGrid}>
-              {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
-                <Text key={`${day}-${index}`} style={styles.calendarWeekday}>
-                  {day}
-                </Text>
-              ))}
-              {Array.from(
-                {
-                  length: new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth(),
-                    1,
-                  ).getDay(),
-                },
-                (_, index) => (
-                  <View key={`blank-${index}`} style={styles.calendarBlank} />
-                ),
-              )}
-              {Array.from(
-                {
-                  length: new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth() + 1,
-                    0,
-                  ).getDate(),
-                },
-                (_, index) => {
-                  const date = new Date(
-                    calendarMonth.getFullYear(),
-                    calendarMonth.getMonth(),
-                    index + 1,
-                  );
-                  const disabled =
-                    (!isHrAdmin &&
-                      date <
-                        new Date(
-                          joiningDate.getFullYear(),
-                          joiningDate.getMonth(),
-                          joiningDate.getDate(),
-                        )) ||
-                    date >
-                      new Date(
-                        now.getFullYear(),
-                        now.getMonth(),
-                        now.getDate(),
-                      );
-                  const selected =
-                    formatDate(date) ===
-                    (calendarTarget === "from" ? fromDate : toDate);
-                  return (
-                    <Pressable
-                      key={index}
-                      disabled={disabled}
-                      onPress={() => chooseCalendarDate(date)}
-                      style={[
-                        styles.calendarDay,
-                        selected && styles.calendarDaySelected,
-                        disabled && styles.calendarDayDisabled,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.calendarDayText,
-                          selected && styles.calendarDayTextSelected,
-                          disabled && styles.calendarDayTextDisabled,
-                        ]}
-                      >
-                        {index + 1}
-                      </Text>
-                    </Pressable>
-                  );
-                },
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
+        target={calendarTarget}
+        selectedDate={calendarTarget === "from" ? fromDate : toDate}
+        minimumDate={attendanceEmployee?.joiningDate ?? formatDate(now)}
+        maximumDate={formatDate(now)}
+        onClose={() => setCalendarVisible(false)}
+        onSelect={chooseCalendarDate}
+      />
     </PageRoot>
   );
 }
 
-function AttendanceTable({
+function RangeMonthStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <View style={styles.rangeMonthStat}>
+      <Text style={styles.rangeMonthStatLabel}>{label}</Text>
+      <Text style={styles.rangeMonthStatValue}>{value}</Text>
+    </View>
+  );
+}
+
+export function AttendanceTable({
   rows,
   loading,
 }: {
@@ -1631,9 +1819,23 @@ function YearSelector({
   );
 }
 
-function Metric({ label, count }: { label: string; count: number }) {
+function Metric({
+  label,
+  count,
+  compact = false,
+}: {
+  label: string;
+  count: number;
+  compact?: boolean;
+}) {
   return (
-    <View style={[styles.metric, { backgroundColor: statusSoftColor(label) }]}>
+    <View
+      style={[
+        styles.metric,
+        compact && styles.rangeMetric,
+        { backgroundColor: statusSoftColor(label) },
+      ]}
+    >
       <Text style={[styles.metricCount, { color: statusColor(label) }]}>
         {count}
       </Text>
@@ -1930,6 +2132,54 @@ const styles = StyleSheet.create({
     backgroundColor: "#E4EEE8",
     borderRadius: 16,
   },
+  rangeYearSection: { marginBottom: 14 },
+  rangeYearButtons: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  rangeYearButton: {
+    minWidth: 72,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    backgroundColor: "white",
+  },
+  rangeYearButtonSelected: {
+    borderColor: COLORS.green,
+    backgroundColor: "#E4F3E9",
+  },
+  rangeYearButtonText: { color: "#53655B", fontSize: 13, fontWeight: "700" },
+  rangeYearButtonTextSelected: { color: COLORS.green, fontWeight: "800" },
+  rangeMonthGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  rangeMonthCard: {
+    width: "48%",
+    minWidth: 132,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#DCE7DF",
+    backgroundColor: "white",
+  },
+  rangeMonthTitle: {
+    color: "#17352B",
+    fontSize: 14,
+    fontWeight: "800",
+    marginBottom: 8,
+  },
+  rangeMonthStat: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 5,
+    paddingVertical: 3,
+  },
+  rangeMonthStatLabel: { color: "#53655B", fontSize: 10, flexShrink: 1 },
+  rangeMonthStatValue: { color: "#17352B", fontSize: 10, fontWeight: "800" },
   rangeFields: { flexDirection: "row", gap: 10 },
   rangeDate: {
     flex: 1,
@@ -2006,6 +2256,8 @@ const styles = StyleSheet.create({
   },
   totalSmall: { fontSize: 13, fontWeight: "600", color: "#66776F" },
   metrics: { flexDirection: "row", gap: 8, marginTop: 12 },
+  rangeMetricsWrap: { flexWrap: "wrap" },
+  rangeMetric: { flex: 1, flexBasis: "18%", minWidth: 54 },
   metric: {
     flex: 1,
     minHeight: 70,

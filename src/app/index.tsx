@@ -351,7 +351,7 @@ export default function LoginScreen() {
               </Text>
             )}
             <Text style={styles.demo}>
-              Demo accounts: eva001â€“eva100 Â· Password: EVA@123
+              Demo accounts: eva001-eva100 · Password: EVA@123
             </Text>
           </Animated.View>
         </ScrollView>
