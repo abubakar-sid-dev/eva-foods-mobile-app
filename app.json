@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "EVA ERP",
-    "slug": "eva-erp",
+    "slug": "MyMobileApp",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
